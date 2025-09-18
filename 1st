@@ -44,34 +44,73 @@ def prepare_stacked_area_data(commit_df, sector_col):
     """
     df = commit_df.copy()
     
-    if 'sector' in df.columns and sector_col not in df.columns:
-        df[sector_col] = df['sector']
+    # Check if the sector column exists
+    if sector_col not in df.columns:
+        if 'sector' in df.columns:
+            df[sector_col] = df['sector']
+        elif 'strategy' in df.columns:
+            df[sector_col] = df['strategy']
+        else:
+            st.error(f"Cannot find sector column '{sector_col}' or fallback columns")
+            return pd.DataFrame()
     
+    # Check for required columns and handle variations
+    if 'called_sum' not in df.columns:
+        if 'called_capital' in df.columns:
+            df['called_sum'] = df['called_capital']
+        elif 'called' in df.columns:
+            df['called_sum'] = df['called']
+        else:
+            st.warning("'called_sum' column not found, using zeros")
+            df['called_sum'] = 0
+    
+    if 'uncalled_sum' not in df.columns:
+        if 'uncalled' in df.columns:
+            df['uncalled_sum'] = df['uncalled']
+        elif 'total_commitment' in df.columns and 'called_sum' in df.columns:
+            df['uncalled_sum'] = df['total_commitment'] - df['called_sum']
+        else:
+            st.warning("'uncalled_sum' column not found, using zeros")
+            df['uncalled_sum'] = 0
+    
+    # Group by year and sector for both called and uncalled
     grouped = df.groupby(['year', sector_col])[['called_sum', 'uncalled_sum']].sum().reset_index()
     
+    # Create separate dataframes for called and uncalled
     called_pivot = grouped.pivot(index='year', columns=sector_col, values='called_sum').fillna(0)
     uncalled_pivot = grouped.pivot(index='year', columns=sector_col, values='uncalled_sum').fillna(0)
     
+    # Reset index for both
     called_pivot = called_pivot.reset_index()
     uncalled_pivot = uncalled_pivot.reset_index()
     
+    # Rename columns to include (called) and (uncalled) suffixes
     called_cols = {col: f"{col} (called)" for col in called_pivot.columns if col != 'year'}
     uncalled_cols = {col: f"{col} (uncalled)" for col in uncalled_pivot.columns if col != 'year'}
     
     called_pivot.rename(columns=called_cols, inplace=True)
     uncalled_pivot.rename(columns=uncalled_cols, inplace=True)
     
-    combined_df = called_pivot.merge(uncalled_pivot, on='year')
+    # Merge the dataframes
+    combined_df = called_pivot.merge(uncalled_pivot, on='year', how='outer')
     combined_df.rename(columns={'year': 'Year'}, inplace=True)
     
-    sectors = [col.replace(' (called)', '') for col in called_pivot.columns if col != 'year']
+    # Reorder columns to alternate between called and uncalled for each sector
+    sectors = list(set([col.replace(' (called)', '').replace(' (uncalled)', '') 
+                       for col in combined_df.columns if col != 'Year']))
     ordered_cols = ['Year']
     for sector in sectors:
-        ordered_cols.append(f"{sector} (called)")
-        ordered_cols.append(f"{sector} (uncalled)")
+        if f"{sector} (called)" in combined_df.columns:
+            ordered_cols.append(f"{sector} (called)")
+        if f"{sector} (uncalled)" in combined_df.columns:
+            ordered_cols.append(f"{sector} (uncalled)")
     
+    # Filter to only include columns that exist
     ordered_cols = [col for col in ordered_cols if col in combined_df.columns]
     combined_df = combined_df[ordered_cols]
+    
+    # Fill NaN values with 0
+    combined_df = combined_df.fillna(0)
     
     return combined_df
 
@@ -80,14 +119,76 @@ def prepare_bubble_chart_data(dff_pos, sector_level):
     """
     Prepare bubble chart data for PowerPoint
     """
-    bubble_data = dff_pos[['fund_name', 'commit_date', 'called_cap_x', 'commitment', sector_level]].copy()
-    bubble_data.columns = ['Fund Name', 'Commitment Date', 'Called Capital %', 'Commitment Size', 'Sector']
+    # Check available columns and handle different column name variations
+    called_cap_col = None
+    if 'called_cap_x' in dff_pos.columns:
+        called_cap_col = 'called_cap_x'
+    elif 'called_cap_%' in dff_pos.columns:
+        called_cap_col = 'called_cap_%'
+    elif 'called_cap' in dff_pos.columns:
+        called_cap_col = 'called_cap'
+    else:
+        st.error(f"Cannot find called capital column. Available columns: {list(dff_pos.columns)}")
+        # Create a default column with zeros if not found
+        dff_pos['called_cap_x'] = 0
+        called_cap_col = 'called_cap_x'
     
-    # Keep dates as datetime for proper handling in PowerPoint
-    bubble_data['Commitment Date'] = pd.to_datetime(bubble_data['Commitment Date'])
+    # Select columns that exist in the dataframe
+    required_cols = []
+    col_mapping = {}
     
-    # Called Capital % should be in 0-1 scale (not percentage)
-    # Assuming called_cap_x is already in 0-1 scale
+    if 'fund_name' in dff_pos.columns:
+        required_cols.append('fund_name')
+        col_mapping['fund_name'] = 'Fund Name'
+    
+    if 'commit_date' in dff_pos.columns:
+        required_cols.append('commit_date')
+        col_mapping['commit_date'] = 'Commitment Date'
+    
+    if called_cap_col:
+        required_cols.append(called_cap_col)
+        col_mapping[called_cap_col] = 'Called Capital %'
+    
+    if 'commitment' in dff_pos.columns:
+        required_cols.append('commitment')
+        col_mapping['commitment'] = 'Commitment Size'
+    
+    if sector_level in dff_pos.columns:
+        required_cols.append(sector_level)
+        col_mapping[sector_level] = 'Sector'
+    else:
+        st.warning(f"Sector column '{sector_level}' not found in dataframe")
+        # Use strategy or any other grouping column as fallback
+        if 'strategy' in dff_pos.columns:
+            required_cols.append('strategy')
+            col_mapping['strategy'] = 'Sector'
+        elif 'sector' in dff_pos.columns:
+            required_cols.append('sector')
+            col_mapping['sector'] = 'Sector'
+    
+    # Create bubble data with available columns
+    bubble_data = dff_pos[required_cols].copy()
+    
+    # Rename columns based on mapping
+    bubble_data.rename(columns=col_mapping, inplace=True)
+    
+    # Ensure Commitment Date is datetime
+    if 'Commitment Date' in bubble_data.columns:
+        bubble_data['Commitment Date'] = pd.to_datetime(bubble_data['Commitment Date'], errors='coerce')
+    
+    # Ensure Called Capital % is in 0-1 scale
+    if 'Called Capital %' in bubble_data.columns:
+        # Check if values are already percentages (e.g., 50 for 50%)
+        max_val = bubble_data['Called Capital %'].max()
+        if max_val > 1:
+            # Values are in percentage form, convert to decimal
+            bubble_data['Called Capital %'] = bubble_data['Called Capital %'] / 100
+    
+    # Handle NaN values
+    bubble_data = bubble_data.fillna({
+        'Called Capital %': 0,
+        'Commitment Size': 0
+    })
     
     return bubble_data
 
