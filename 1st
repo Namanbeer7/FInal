@@ -1,0 +1,767 @@
+# private_viz_ppt_export.py
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from pptx import Presentation
+from pptx.chart.data import CategoryChartData, BubbleChartData
+from pptx.dml.color import RGBColor
+from pptx.util import Pt, Inches
+from pptx.enum.chart import XL_MARKER_STYLE, XL_CHART_TYPE
+from datetime import datetime
+import tempfile
+import os
+import io
+
+# Color palette matching cashflow export
+ALADDIN_COLORS = [
+    '#008B5C', '#FFCE00', '#FF4713', '#FC9FAF', '#9E79D9', '#F4B223',
+]
+
+Extended_Colors = ALADDIN_COLORS + ['#FFB194',
+    '#F2A900', '#FFE67F', '#9BD7BE', '#008B5C', '#00573C', '#CDB9E6', '#9062BC', '#6E3FA3', '#FFC8CD', '#C80058', '#990012']
+
+# Convert hex colors to RGBColor objects
+PPT_EXTENDED_RGB_COLORS = []
+for hex_color in Extended_Colors:
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    PPT_EXTENDED_RGB_COLORS.append(RGBColor(r, g, b))
+
+# Define specific colors for charts
+COLOR_GREEN = RGBColor(0, 139, 19)  # Distributions
+COLOR_GRAY = RGBColor(166, 166, 166)  # Capital Calls
+COLOR_ORANGE = RGBColor(255, 71, 19)  # NAV/DPI
+COLOR_BLUE = RGBColor(31, 119, 180)  # Cumulative Cashflows
+COLOR_YELLOW = RGBColor(244, 178, 35)  # RVPI
+
+
+def prepare_stacked_area_data(commit_df, sector_col):
+    """
+    Prepare data for the stacked area chart with called and uncalled amounts
+    """
+    df = commit_df.copy()
+    
+    if 'sector' in df.columns and sector_col not in df.columns:
+        df[sector_col] = df['sector']
+    
+    grouped = df.groupby(['year', sector_col])[['called_sum', 'uncalled_sum']].sum().reset_index()
+    
+    called_pivot = grouped.pivot(index='year', columns=sector_col, values='called_sum').fillna(0)
+    uncalled_pivot = grouped.pivot(index='year', columns=sector_col, values='uncalled_sum').fillna(0)
+    
+    called_pivot = called_pivot.reset_index()
+    uncalled_pivot = uncalled_pivot.reset_index()
+    
+    called_cols = {col: f"{col} (called)" for col in called_pivot.columns if col != 'year'}
+    uncalled_cols = {col: f"{col} (uncalled)" for col in uncalled_pivot.columns if col != 'year'}
+    
+    called_pivot.rename(columns=called_cols, inplace=True)
+    uncalled_pivot.rename(columns=uncalled_cols, inplace=True)
+    
+    combined_df = called_pivot.merge(uncalled_pivot, on='year')
+    combined_df.rename(columns={'year': 'Year'}, inplace=True)
+    
+    sectors = [col.replace(' (called)', '') for col in called_pivot.columns if col != 'year']
+    ordered_cols = ['Year']
+    for sector in sectors:
+        ordered_cols.append(f"{sector} (called)")
+        ordered_cols.append(f"{sector} (uncalled)")
+    
+    ordered_cols = [col for col in ordered_cols if col in combined_df.columns]
+    combined_df = combined_df[ordered_cols]
+    
+    return combined_df
+
+
+def prepare_bubble_chart_data(dff_pos, sector_level):
+    """
+    Prepare bubble chart data for PowerPoint
+    """
+    bubble_data = dff_pos[['fund_name', 'commit_date', 'called_cap_x', 'commitment', sector_level]].copy()
+    bubble_data.columns = ['Fund Name', 'Commitment Date', 'Called Capital %', 'Commitment Size', 'Sector']
+    
+    # Keep dates as datetime for proper handling in PowerPoint
+    bubble_data['Commitment Date'] = pd.to_datetime(bubble_data['Commitment Date'])
+    
+    # Called Capital % should be in 0-1 scale (not percentage)
+    # Assuming called_cap_x is already in 0-1 scale
+    
+    return bubble_data
+
+
+def prepare_irr_history_data(date_list, irr_list):
+    """
+    Prepare IRR history data for line chart
+    """
+    df = pd.DataFrame({
+        'Date': date_list,
+        'IRR': irr_list
+    })
+    return df
+
+
+def prepare_cashflows_nav_data(date_list, dists, capcalls, nav_hist, cumulativecash):
+    """
+    Prepare cashflows and NAV history data for combo chart
+    """
+    df = pd.DataFrame({
+        'Date': date_list,
+        'Distributions': dists,
+        'Capital Calls': capcalls,
+        'NAV': nav_hist,
+        'Cumulative Cashflows': cumulativecash
+    })
+    return df
+
+
+def prepare_tvpi_composition_data(date_list, dpi_hist, rvpi_hist):
+    """
+    Prepare TVPI composition data for stacked column chart
+    """
+    df = pd.DataFrame({
+        'Date': date_list,
+        'DPI': dpi_hist,
+        'RVPI': rvpi_hist
+    })
+    return df
+
+
+def update_bubble_chart(chart, bubble_data, chart_name=""):
+    """
+    Update bubble chart with commitment and funding data
+    """
+    try:
+        chart_data = BubbleChartData()
+        
+        # Group by sector for different series
+        sectors = bubble_data['Sector'].unique()
+        
+        for i, sector in enumerate(sectors):
+            sector_data = bubble_data[bubble_data['Sector'] == sector]
+            
+            # Create series for each sector
+            series = chart_data.add_series(sector)
+            
+            for _, row in sector_data.iterrows():
+                # Convert date to Excel serial number
+                excel_date = (row['Commitment Date'] - pd.Timestamp('1899-12-30')).days
+                
+                # Add data point (x=date, y=called%, size=commitment)
+                series.add_data_point(
+                    excel_date,  # X value (date as number)
+                    row['Called Capital %'],  # Y value (0-1 scale)
+                    row['Commitment Size']  # Bubble size
+                )
+        
+        chart.replace_data(chart_data)
+        
+        # Apply colors to series
+        for i, series in enumerate(chart.series):
+            if hasattr(series.format, 'fill'):
+                series.format.fill.solid()
+                series.format.fill.fore_color.rgb = PPT_EXTENDED_RGB_COLORS[i % len(PPT_EXTENDED_RGB_COLORS)]
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating bubble chart '{chart_name}': {str(e)}")
+        return False
+
+
+def update_line_chart(chart, df, chart_name=""):
+    """
+    Update line chart for IRR history
+    """
+    try:
+        chart_data = CategoryChartData()
+        
+        # Format dates for categories
+        chart_data.categories = [d.strftime('%Y-%m') if hasattr(d, 'strftime') else str(d) 
+                                 for d in df['Date']]
+        
+        # Add IRR series
+        chart_data.add_series('IRR', df['IRR'].tolist())
+        
+        chart.replace_data(chart_data)
+        
+        # Apply green color to IRR line
+        if hasattr(chart.series[0].format, 'line'):
+            chart.series[0].format.line.color.rgb = RGBColor(44, 160, 44)
+            chart.series[0].format.line.width = Pt(2.25)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating line chart '{chart_name}': {str(e)}")
+        return False
+
+
+def update_combo_chart(chart, df, chart_name=""):
+    """
+    Update combo chart for Cashflows & NAV History
+    """
+    try:
+        chart_data = CategoryChartData()
+        
+        # Format dates for categories
+        chart_data.categories = [d.strftime('%Y-%m') if hasattr(d, 'strftime') else str(d) 
+                                 for d in df['Date']]
+        
+        # Add all series
+        chart_data.add_series('Distributions', df['Distributions'].tolist())
+        chart_data.add_series('Capital Calls', df['Capital Calls'].tolist())
+        chart_data.add_series('NAV', df['NAV'].tolist())
+        chart_data.add_series('Cumulative Cashflows', df['Cumulative Cashflows'].tolist())
+        
+        chart.replace_data(chart_data)
+        
+        # Apply colors and chart types
+        if len(chart.series) >= 4:
+            # Distributions (bar - green)
+            chart.series[0].format.fill.solid()
+            chart.series[0].format.fill.fore_color.rgb = COLOR_GREEN
+            
+            # Capital Calls (bar - gray)
+            chart.series[1].format.fill.solid()
+            chart.series[1].format.fill.fore_color.rgb = COLOR_GRAY
+            
+            # NAV (line - orange)
+            if hasattr(chart.series[2].format, 'line'):
+                chart.series[2].format.line.color.rgb = COLOR_ORANGE
+                chart.series[2].format.line.width = Pt(2.25)
+            
+            # Cumulative Cashflows (line - blue)
+            if hasattr(chart.series[3].format, 'line'):
+                chart.series[3].format.line.color.rgb = COLOR_BLUE
+                chart.series[3].format.line.width = Pt(2.25)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating combo chart '{chart_name}': {str(e)}")
+        return False
+
+
+def update_stacked_column_chart(chart, df, chart_name=""):
+    """
+    Update stacked column chart for TVPI composition
+    """
+    try:
+        chart_data = CategoryChartData()
+        
+        # Format dates for categories
+        chart_data.categories = [d.strftime('%Y-%m') if hasattr(d, 'strftime') else str(d) 
+                                 for d in df['Date']]
+        
+        # Add DPI and RVPI series
+        chart_data.add_series('DPI', df['DPI'].tolist())
+        chart_data.add_series('RVPI', df['RVPI'].tolist())
+        
+        chart.replace_data(chart_data)
+        
+        # Apply colors
+        if len(chart.series) >= 2:
+            # DPI (orange)
+            chart.series[0].format.fill.solid()
+            chart.series[0].format.fill.fore_color.rgb = COLOR_ORANGE
+            
+            # RVPI (yellow)
+            chart.series[1].format.fill.solid()
+            chart.series[1].format.fill.fore_color.rgb = COLOR_YELLOW
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating stacked column chart '{chart_name}': {str(e)}")
+        return False
+
+
+def update_chart_with_data(chart, df, chart_name=""):
+    """
+    Update chart data and apply consistent styling with called/uncalled color pattern
+    """
+    try:
+        chart_data = CategoryChartData()
+        chart_data.categories = [str(cat) for cat in df.iloc[:, 0].tolist()]
+        
+        for col_idx in range(1, len(df.columns)):
+            series_name = df.columns[col_idx]
+            series_values = df.iloc[:, col_idx].tolist()
+            
+            processed_values = [
+                float(val) if pd.notna(val) else None
+                for val in pd.to_numeric(series_values, errors='coerce')
+            ]
+            
+            chart_data.add_series(series_name, processed_values)
+        
+        chart.replace_data(chart_data)
+        
+        if hasattr(chart, 'series'):
+            color_index = 0
+            sector_color_map = {}
+            
+            for i, series in enumerate(chart.series):
+                series_name = series.name
+                
+                if '(called)' in series_name:
+                    sector = series_name.replace(' (called)', '').strip()
+                    is_called = True
+                elif '(uncalled)' in series_name:
+                    sector = series_name.replace(' (uncalled)', '').strip()
+                    is_called = False
+                else:
+                    sector = series_name
+                    is_called = True
+                
+                if sector not in sector_color_map:
+                    sector_color_map[sector] = PPT_EXTENDED_RGB_COLORS[color_index % len(PPT_EXTENDED_RGB_COLORS)]
+                    color_index += 1
+                
+                base_color = sector_color_map[sector]
+                
+                if hasattr(series.format, 'fill'):
+                    series.format.fill.solid()
+                    if is_called:
+                        series.format.fill.fore_color.rgb = base_color
+                    else:
+                        color_idx = list(sector_color_map.values()).index(base_color)
+                        if color_idx < len(Extended_Colors):
+                            hex_color = Extended_Colors[color_idx].lstrip('#')
+                            r = int(hex_color[0:2], 16)
+                            g = int(hex_color[2:4], 16)
+                            b = int(hex_color[4:6], 16)
+                            
+                            alpha = 0.4
+                            new_r = int(r * alpha + 255 * (1 - alpha))
+                            new_g = int(g * alpha + 255 * (1 - alpha))
+                            new_b = int(b * alpha + 255 * (1 - alpha))
+                            
+                            lighter_color = RGBColor(new_r, new_g, new_b)
+                            series.format.fill.fore_color.rgb = lighter_color
+                        else:
+                            series.format.fill.fore_color.rgb = base_color
+                
+                if hasattr(series.format, 'line'):
+                    series.format.line.color.rgb = RGBColor(255, 255, 255)
+                    series.format.line.width = Pt(0.5)
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Error updating chart '{chart_name}': {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return False
+
+
+def export_all_charts_to_ppt(data_dict, template_path, output_path, granularity, client_name):
+    """
+    Export all charts to PowerPoint template including the 5 new charts
+    
+    Args:
+        data_dict: Dictionary containing all necessary data:
+            - commit_df: Commitment data for stacked area
+            - dff_pos: Position data for bubble charts
+            - date_list: List of dates for time series
+            - dists: Distributions array
+            - capcalls: Capital calls array
+            - nav_hist: NAV history list
+            - cumulativecash: Cumulative cashflows array
+            - dpi_hist: DPI history array
+            - rvpi_hist: RVPI history array
+            - irrlist: IRR history list
+    """
+    try:
+        prs = Presentation(template_path)
+        charts_updated = 0
+        st.write("Starting chart export process...")
+        
+        # 1. Update stacked area charts (existing functionality)
+        if 'commit_df' in data_dict:
+            st.write("Processing stacked area charts...")
+            chart_configs = [
+                {"name": "cht_stacked_area_broad", "sector_col": "sector_level_1"},
+                {"name": "cht_stacked_area_granular", "sector_col": "sector_level_2"}
+            ]
+            
+            for config in chart_configs:
+                chart_name = config["name"]
+                sector_col = config["sector_col"]
+                
+                st.write(f"Looking for chart: {chart_name}")
+                
+                if sector_col not in data_dict['commit_df'].columns:
+                    if 'sector' in data_dict['commit_df'].columns:
+                        st.info(f"Using 'sector' column for {chart_name} as {sector_col} not found")
+                        temp_df = data_dict['commit_df'].copy()
+                        temp_df[sector_col] = temp_df['sector']
+                        chart_data = prepare_stacked_area_data(temp_df, sector_col)
+                    else:
+                        st.warning(f"Cannot find {sector_col} or 'sector' column for {chart_name}. Skipping.")
+                        continue
+                else:
+                    chart_data = prepare_stacked_area_data(data_dict['commit_df'], sector_col)
+                
+                if chart_data.empty:
+                    st.warning(f"No data for {chart_name}")
+                    continue
+                
+                st.write(f"Data prepared for {chart_name} with shape: {chart_data.shape}")
+                
+                chart_found = False
+                for slide_idx, slide in enumerate(prs.slides):
+                    for shape in slide.shapes:
+                        if shape.name == chart_name:
+                            st.write(f"Found chart '{chart_name}' on slide {slide_idx + 1}")
+                            if hasattr(shape, 'chart') and shape.chart is not None:
+                                if update_chart_with_data(shape.chart, chart_data, chart_name):
+                                    charts_updated += 1
+                                    chart_found = True
+                                    st.success(f"✅ Chart '{chart_name}' updated successfully")
+                                    break
+                            else:
+                                st.warning(f"Shape '{chart_name}' is not a valid chart")
+                    
+                    if chart_found:
+                        break
+                
+                if not chart_found:
+                    st.warning(f"⚠️ Chart '{chart_name}' not found in template")
+        
+        # 2. Update bubble charts (commitment and funding)
+        if 'dff_pos' in data_dict:
+            st.write("Processing bubble charts...")
+            bubble_configs = [
+                {"name": "cht_commitment_broad", "sector_col": "sector_level_1"},
+                {"name": "cht_commitment_granular", "sector_col": "sector_level_2"}
+            ]
+            
+            for config in bubble_configs:
+                chart_name = config["name"]
+                sector_col = config["sector_col"]
+                
+                st.write(f"Looking for chart: {chart_name}")
+                
+                if sector_col in data_dict['dff_pos'].columns:
+                    bubble_data = prepare_bubble_chart_data(data_dict['dff_pos'], sector_col)
+                    st.write(f"Data prepared for {chart_name} with shape: {bubble_data.shape}")
+                    
+                    chart_found = False
+                    for slide_idx, slide in enumerate(prs.slides):
+                        for shape in slide.shapes:
+                            if shape.name == chart_name:
+                                st.write(f"Found chart '{chart_name}' on slide {slide_idx + 1}")
+                                if hasattr(shape, 'chart') and shape.chart is not None:
+                                    if update_bubble_chart(shape.chart, bubble_data, chart_name):
+                                        charts_updated += 1
+                                        chart_found = True
+                                        st.success(f"✅ Chart '{chart_name}' updated successfully")
+                                        break
+                                else:
+                                    st.warning(f"Shape '{chart_name}' is not a valid chart")
+                        
+                        if chart_found:
+                            break
+                    
+                    if not chart_found:
+                        st.warning(f"⚠️ Chart '{chart_name}' not found in template")
+                else:
+                    st.warning(f"Column '{sector_col}' not found in position data for {chart_name}")
+        
+        # 3. Update IRR history chart
+        if 'date_list' in data_dict and 'irrlist' in data_dict:
+            st.write("Processing IRR history chart...")
+            irr_data = prepare_irr_history_data(data_dict['date_list'], data_dict['irrlist'])
+            st.write(f"Data prepared for IRR chart with shape: {irr_data.shape}")
+            
+            chart_found = False
+            for slide_idx, slide in enumerate(prs.slides):
+                for shape in slide.shapes:
+                    if shape.name == "cht_irr":
+                        st.write(f"Found chart 'cht_irr' on slide {slide_idx + 1}")
+                        if hasattr(shape, 'chart') and shape.chart is not None:
+                            if update_line_chart(shape.chart, irr_data, "cht_irr"):
+                                charts_updated += 1
+                                chart_found = True
+                                st.success(f"✅ Chart 'cht_irr' updated successfully")
+                                break
+                        else:
+                            st.warning(f"Shape 'cht_irr' is not a valid chart")
+                
+                if chart_found:
+                    break
+            
+            if not chart_found:
+                st.warning(f"⚠️ Chart 'cht_irr' not found in template")
+        
+        # 4. Update Cashflows & NAV History chart
+        if all(k in data_dict for k in ['date_list', 'dists', 'capcalls', 'nav_hist', 'cumulativecash']):
+            st.write("Processing Cashflows & NAV History chart...")
+            cashflows_data = prepare_cashflows_nav_data(
+                data_dict['date_list'],
+                data_dict['dists'],
+                data_dict['capcalls'],
+                data_dict['nav_hist'],
+                data_dict['cumulativecash']
+            )
+            st.write(f"Data prepared for Cashflows chart with shape: {cashflows_data.shape}")
+            
+            chart_found = False
+            for slide_idx, slide in enumerate(prs.slides):
+                for shape in slide.shapes:
+                    if shape.name == "cht_history":
+                        st.write(f"Found chart 'cht_history' on slide {slide_idx + 1}")
+                        if hasattr(shape, 'chart') and shape.chart is not None:
+                            if update_combo_chart(shape.chart, cashflows_data, "cht_history"):
+                                charts_updated += 1
+                                chart_found = True
+                                st.success(f"✅ Chart 'cht_history' updated successfully")
+                                break
+                        else:
+                            st.warning(f"Shape 'cht_history' is not a valid chart")
+                
+                if chart_found:
+                    break
+            
+            if not chart_found:
+                st.warning(f"⚠️ Chart 'cht_history' not found in template")
+        
+        # 5. Update TVPI Composition chart
+        if all(k in data_dict for k in ['date_list', 'dpi_hist', 'rvpi_hist']):
+            st.write("Processing TVPI Composition chart...")
+            tvpi_data = prepare_tvpi_composition_data(
+                data_dict['date_list'],
+                data_dict['dpi_hist'],
+                data_dict['rvpi_hist']
+            )
+            st.write(f"Data prepared for TVPI chart with shape: {tvpi_data.shape}")
+            
+            chart_found = False
+            for slide_idx, slide in enumerate(prs.slides):
+                for shape in slide.shapes:
+                    if shape.name == "cht_tvpi":
+                        st.write(f"Found chart 'cht_tvpi' on slide {slide_idx + 1}")
+                        if hasattr(shape, 'chart') and shape.chart is not None:
+                            if update_stacked_column_chart(shape.chart, tvpi_data, "cht_tvpi"):
+                                charts_updated += 1
+                                chart_found = True
+                                st.success(f"✅ Chart 'cht_tvpi' updated successfully")
+                                break
+                        else:
+                            st.warning(f"Shape 'cht_tvpi' is not a valid chart")
+                
+                if chart_found:
+                    break
+            
+            if not chart_found:
+                st.warning(f"⚠️ Chart 'cht_tvpi' not found in template")
+        
+        # Save presentation
+        prs.save(output_path)
+        st.success(f"📊 PowerPoint saved with {charts_updated} charts updated out of 9 expected")
+        
+        return charts_updated > 0
+        
+    except Exception as e:
+        st.error(f"Error in export_all_charts_to_ppt: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return False
+
+
+def export_combined_tables_to_ppt(strat_agg_combined, template_path, output_path, client_name):
+    """
+    Export BOTH strategy tables to PowerPoint template with dynamic row adjustment
+    """
+    try:
+        from copy import deepcopy
+        prs = Presentation(template_path)
+        
+        table_configs = [
+            {"name": "tbd_strategy_broad", "df_key": "broad", "sector_col": "sector_level_1"},
+            {"name": "tbd_strategy_granular", "df_key": "granular", "sector_col": "sector_level_2"}
+        ]
+        
+        tables_updated = 0
+        
+        for config in table_configs:
+            table_name = config["name"]
+            df_key = config["df_key"]
+            
+            if df_key not in strat_agg_combined or strat_agg_combined[df_key] is None:
+                st.warning(f"No data for table '{table_name}' - ensure {df_key} data is provided")
+                continue
+            
+            df = strat_agg_combined[df_key].copy()
+            st.write(f"Processing table '{table_name}' with shape {df.shape}")
+            
+            table_found = False
+            for slide_idx, slide in enumerate(prs.slides):
+                for shape in slide.shapes:
+                    if shape.name == table_name and hasattr(shape, 'table'):
+                        st.write(f"Found table '{table_name}' on slide {slide_idx + 1}")
+                        try:
+                            table = shape.table
+                            
+                            # Calculate rows needed (data rows + header)
+                            current_rows = len(table.rows)
+                            needed_data_rows = len(df)
+                            needed_total_rows = needed_data_rows + 1  # +1 for header
+                            
+                            st.write(f"Current rows: {current_rows}, Needed rows: {needed_total_rows}")
+                            
+                            # Adjust table rows to match dataframe
+                            if needed_total_rows > current_rows:
+                                # Add rows
+                                rows_to_add = needed_total_rows - current_rows
+                                st.write(f"Adding {rows_to_add} rows to table")
+                                
+                                # Clone the second row (assuming it has the proper formatting)
+                                tbl = table._tbl
+                                tr_to_clone = tbl.tr_lst[1] if len(tbl.tr_lst) > 1 else tbl.tr_lst[0]
+                                
+                                for _ in range(rows_to_add):
+                                    new_tr = deepcopy(tr_to_clone)
+                                    tbl.append(new_tr)
+                                    # Clear the text in the cloned row
+                                    for tc in new_tr.tc_lst:
+                                        for p in tc.p_lst:
+                                            for r in p.r_lst:
+                                                r.t = ""
+                                
+                            elif needed_total_rows < current_rows:
+                                # Remove rows
+                                rows_to_remove = current_rows - needed_total_rows
+                                st.write(f"Removing {rows_to_remove} rows from table")
+                                
+                                # Calculate which rows to delete (from bottom)
+                                max_rows = len(table.rows)
+                                redundant_rows = rows_to_remove
+                                
+                                rownum = list(range(0, max_rows))[::-1]
+                                del_rows = rownum[:redundant_rows]
+                                del_rows = sorted(del_rows, reverse=True)
+                                
+                                for i in del_rows:
+                                    try:
+                                        # Access the XML element and remove it
+                                        table._tbl.remove(table.rows[i]._tr)
+                                    except:
+                                        pass
+                            
+                            # Now update the table data
+                            for row_idx in range(len(df)):
+                                for col_idx in range(len(df.columns)):
+                                    if row_idx + 1 < len(table.rows) and col_idx < len(table.rows[row_idx + 1].cells):
+                                        cell = table.rows[row_idx + 1].cells[col_idx]  # +1 to skip header
+                                        value = df.iloc[row_idx, col_idx]
+                                        
+                                        # Clear existing paragraphs and add new text
+                                        cell.text = ""  # Clear first
+                                        
+                                        # Format values
+                                        col_name = df.columns[col_idx]
+                                        if isinstance(value, (int, float)):
+                                            if pd.isna(value):
+                                                cell.text = ""
+                                            elif col_name in ['called_cap_x']:
+                                                cell.text = f"{value * 100:.1f}%"
+                                            elif col_name in ['DPI', 'TVPI']:
+                                                cell.text = f"{value:.2f}x"
+                                            elif col_name in ['nav', 'commitment', 'called_capital', 'distributions']:
+                                                cell.text = f"${value:,.0f}"
+                                            else:
+                                                cell.text = f"{value:.1f}"
+                                        else:
+                                            cell.text = str(value) if value else ""
+                            
+                            tables_updated += 1
+                            table_found = True
+                            st.success(f"✅ Table '{table_name}' updated successfully with {needed_data_rows} data rows")
+                            break
+                            
+                        except Exception as e:
+                            st.error(f"Error updating table '{table_name}': {str(e)}")
+                            import traceback
+                            st.error(traceback.format_exc())
+                
+                if table_found:
+                    break
+            
+            if not table_found:
+                st.warning(f"Table '{table_name}' not found in template")
+        
+        prs.save(output_path)
+        st.write(f"PowerPoint saved with {tables_updated} tables updated")
+        
+        return tables_updated > 0
+        
+    except Exception as e:
+        st.error(f"Error in export_combined_tables_to_ppt: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return False
+
+
+def generate_comprehensive_excel(data_dict, strat_agg_dict, granularity, client_name):
+    """
+    Generate comprehensive Excel file with all chart data
+    """
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # 1. Stacked area data
+        if 'commit_df' in data_dict:
+            sector_col = 'sector_level_1' if granularity == 'Broad' else 'sector_level_2'
+            if sector_col in data_dict['commit_df'].columns or 'sector' in data_dict['commit_df'].columns:
+                temp_df = data_dict['commit_df'].copy()
+                if sector_col not in temp_df.columns and 'sector' in temp_df.columns:
+                    temp_df[sector_col] = temp_df['sector']
+                stacked_area_data = prepare_stacked_area_data(temp_df, sector_col)
+                stacked_area_data.to_excel(writer, sheet_name='Stacked Area Data', index=False)
+        
+        # 2. Bubble chart data
+        if 'dff_pos' in data_dict:
+            for level, sector_col in [('Broad', 'sector_level_1'), ('Granular', 'sector_level_2')]:
+                if sector_col in data_dict['dff_pos'].columns:
+                    bubble_data = prepare_bubble_chart_data(data_dict['dff_pos'], sector_col)
+                    bubble_data.to_excel(writer, sheet_name=f'Bubble Chart {level}', index=False)
+        
+        # 3. IRR History
+        if 'date_list' in data_dict and 'irrlist' in data_dict:
+            irr_data = prepare_irr_history_data(data_dict['date_list'], data_dict['irrlist'])
+            irr_data.to_excel(writer, sheet_name='IRR History', index=False)
+        
+        # 4. Cashflows & NAV
+        if all(k in data_dict for k in ['date_list', 'dists', 'capcalls', 'nav_hist', 'cumulativecash']):
+            cashflows_data = prepare_cashflows_nav_data(
+                data_dict['date_list'],
+                data_dict['dists'],
+                data_dict['capcalls'],
+                data_dict['nav_hist'],
+                data_dict['cumulativecash']
+            )
+            cashflows_data.to_excel(writer, sheet_name='Cashflows NAV History', index=False)
+        
+        # 5. TVPI Composition
+        if all(k in data_dict for k in ['date_list', 'dpi_hist', 'rvpi_hist']):
+            tvpi_data = prepare_tvpi_composition_data(
+                data_dict['date_list'],
+                data_dict['dpi_hist'],
+                data_dict['rvpi_hist']
+            )
+            tvpi_data.to_excel(writer, sheet_name='TVPI Composition', index=False)
+        
+        # 6. Strategy tables
+        if 'broad' in strat_agg_dict and strat_agg_dict['broad'] is not None:
+            strat_agg_dict['broad'].to_excel(writer, sheet_name='Strategy Broad', index=False)
+        
+        if 'granular' in strat_agg_dict and strat_agg_dict['granular'] is not None:
+            strat_agg_dict['granular'].to_excel(writer, sheet_name='Strategy Granular', index=False)
+    
+    output.seek(0)
+    return output
