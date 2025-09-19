@@ -1,0 +1,29 @@
+# Create entry with both sector levels for PowerPoint compatibility
+commit_entry = {
+    'year': year,
+    'called_sum': called_sum[i],
+    'uncalled_sum': uncalled_sum[i],
+    'total_commitment': tot_commit_sum[i]
+}
+
+# Add the sector value to the appropriate column based on granularity
+if granularity == 'Broad':
+    commit_entry['sector_level_1'] = sss
+    # Try to get the granular mapping if available
+    if 'sector_level_1' in dff_trade.columns and 'sector_level_2' in dff_trade.columns:
+        # Get the most common sector_level_2 for this sector_level_1
+        mapping = dff_trade[dff_trade['sector_level_1'] == sss]['sector_level_2'].mode()
+        commit_entry['sector_level_2'] = mapping.iloc[0] if not mapping.empty else sss
+    else:
+        commit_entry['sector_level_2'] = sss
+else:  # Granular
+    commit_entry['sector_level_2'] = sss
+    # Try to get the broad mapping if available
+    if 'sector_level_1' in dff_trade.columns and 'sector_level_2' in dff_trade.columns:
+        # Get the sector_level_1 for this sector_level_2
+        mapping = dff_trade[dff_trade['sector_level_2'] == sss]['sector_level_1'].mode()
+        commit_entry['sector_level_1'] = mapping.iloc[0] if not mapping.empty else sss
+    else:
+        commit_entry['sector_level_1'] = sss
+
+commit_df_list.append(commit_entry)
