@@ -1,0 +1,165 @@
+1st
+    cashflow_data_portfolio = df_cashflows[(df_cashflows.client_name == client_name)].reset_index()
+    non_commit_cashflow_data_portfolio = trade_data[~trade_data.trade_type.str.contains('COMMIT')].reset_index()
+    date_min_portfolio = min(non_commit_cashflow_data_portfolio["settle_date"])
+    date_min2_portfolio = min(cashflow_data_portfolio["trade_date"])
+    date_min_portfolio = min(date_min_portfolio, date_min2_portfolio)
+    date_max_portfolio = pd.to_datetime('today').normalize()
+    next_month_portfolio = date_max_portfolio.replace(day=28) + timedelta(days=4)
+    date_max_portfolio = next_month_portfolio - timedelta(days=next_month_portfolio.day)
+    date_list_portfolio = pd.date_range(date_min_portfolio, date_max_portfolio, freq='M').tolist()
+
+    dists_portfolio = np.array([cashflow_data_portfolio[(cashflow_data_portfolio.cashflow_type.str.contains("distribution")) & (cashflow_data_portfolio['settle_date'] <= yyy) & (cashflow_data_portfolio['settle_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_portfolio])
+    capcalls_portfolio = np.array([cashflow_data_portfolio[(cashflow_data_portfolio.cashflow_type.str.contains("capital call")) & (cashflow_data_portfolio['trade_date'] <= yyy) & (cashflow_data_portfolio['trade_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_portfolio])
+
+    cumulativecash_portfolio = np.cumsum(dists_portfolio + capcalls_portfolio)
+    nav_hist_portfolio = [non_commit_cashflow_data_portfolio[(non_commit_cashflow_data_portfolio['settle_date'] <= yyy)]['curr_face'].sum() for yyy in date_list_portfolio]
+    dpi_hist_portfolio = np.cumsum(dists_portfolio) / -np.cumsum(capcalls_portfolio)
+    rvpi_hist_portfolio = nav_hist_portfolio / -np.cumsum(capcalls_portfolio)
+    tvpi_hist_portfolio = (np.cumsum(dists_portfolio) + nav_hist_portfolio) / -np.cumsum(capcalls_portfolio)
+
+    tick_list_portfolio = port_data.iloc[:]['parent'].to_list()
+    cusip_list_portfolio = port_data.iloc[:]['cusip'].to_list()
+
+    irrlist_portfolio = [get_irr(cusip_list_portfolio, tick_list_portfolio, yyy, df_cashflows, df_trade) for yyy in date_list_portfolio]
+
+2nd
+
+    with tab1:
+        # Use portfolio-level data that was already calculated
+        
+        fig_combined = go.Figure()
+
+        # Bar traces for Distributions and Capital Calls
+        fig_combined.add_trace(go.Bar(
+            name="Distributions",
+            x=date_list_portfolio,
+            y=dists_portfolio,
+            marker=dict(color="#008B13")
+        ))
+
+        fig_combined.add_trace(go.Bar(
+            name="Capital Calls",
+            x=date_list_portfolio,
+            y=capcalls_portfolio,
+            marker=dict(color="#A6A6A6")
+        ))
+
+        # Line traces for NAV and Cumulative Cashflows
+        fig_combined.add_trace(go.Scatter(
+            name="NAV",
+            x=date_list_portfolio,
+            y=nav_hist_portfolio,
+            mode='lines',
+            line_shape='spline',
+            marker=dict(color="#FF4713")
+        ))
+
+        fig_combined.add_trace(go.Scatter(
+            name="Cumulative Cashflows",
+            x=date_list_portfolio,
+            y=cumulativecash_portfolio,
+            mode='lines',
+            line_shape='spline',
+            marker=dict(color="#1f77b4")
+        ))
+
+        # Layout settings
+        fig_combined.update_layout(
+            title="Cashflows & NAV History",
+            width=1000,
+            barmode='group',
+            yaxis=dict(title="Size ($)")
+        )
+
+        # Create stacked bar chart
+        fig_dpi_rvpi_stacked = go.Figure()
+
+        # DPI bar (bottom stack)
+        fig_dpi_rvpi_stacked.add_trace(go.Bar(
+            name="DPI",
+            x=date_list_portfolio,
+            y=dpi_hist_portfolio,
+            marker=dict(color="#FF4713")
+        ))
+
+        # RVPI bar (stacked on top of DPI)
+        fig_dpi_rvpi_stacked.add_trace(go.Bar(
+            name="RVPI",
+            x=date_list_portfolio,
+            y=rvpi_hist_portfolio,
+            marker=dict(color="#F4B223")
+        ))
+
+        # Layout
+        fig_dpi_rvpi_stacked.update_layout(
+            barmode='stack',
+            title="TVPI Composition: DPI and RVPI Over Time",
+            width=1000,
+            yaxis=dict(title="Multiple (x)"),
+        )
+
+        # Add TVPI labels only on every 4th bar and always include the last one
+        for i, (x, tvpi) in enumerate(zip(date_list_portfolio, tvpi_hist_portfolio)):
+            if i % 3 == 0 or i == len(tvpi_hist_portfolio) - 1:
+                fig_dpi_rvpi_stacked.add_annotation(
+                    x=x,
+                    y=tvpi,
+                    text=f"{tvpi:.2f}x",
+                    showarrow=False,
+                    yshift=5,
+                    font=dict(size=10, color="black")
+                )
+
+        fig_irr = go.Figure()
+
+        fig_irr.add_trace(go.Scatter(
+            name="IRR", x=date_list_portfolio, y=irrlist_portfolio,
+            mode='lines', line_shape='spline',
+            marker=dict(color="#2ca02c")
+        ))
+
+3rd
+
+
+        # Prepare client-level data for Excel export
+        client_excel_data = {
+            'Commitments Over Time': pd.DataFrame(commitment_over_time_data),
+            'Commitment & Funding': dff_pos[['fund_name', 'commit_date', 'commitment', 'called_cap_x', 'strategy', sector_level]],
+            'Cashflows & NAV': pd.DataFrame({
+                'Date': date_list_portfolio,
+                'Distributions': dists_portfolio,
+                'Capital Calls': capcalls_portfolio,
+                'NAV': nav_hist_portfolio,
+                'Cumulative Cashflows': cumulativecash_portfolio
+            }),
+            'TVPI Composition': pd.DataFrame({
+                'Date': date_list_portfolio,
+                'DPI': dpi_hist_portfolio,
+                'RVPI': rvpi_hist_portfolio,
+                'TVPI': tvpi_hist_portfolio
+            }),
+            'IRR History': pd.DataFrame({
+                'Date': date_list_portfolio,
+                'IRR': irrlist_portfolio
+            }),
+            'Funds Table': df_table,
+            'Strategy Summary': strat_agg_df
+        }
+
+
+
+4th
+
+            data_dict = {
+                'commit_df': commit_df,
+                'dff_pos': dff_pos,
+                'date_list': date_list_portfolio,  # Portfolio-level dates
+                'dists': dists_portfolio,  # Portfolio-level distributions
+                'capcalls': capcalls_portfolio,  # Portfolio-level capital calls
+                'nav_hist': nav_hist_portfolio,  # Portfolio-level NAV
+                'cumulativecash': cumulativecash_portfolio,  # Portfolio-level cumulative cash
+                'dpi_hist': dpi_hist_portfolio,  # Portfolio-level DPI
+                'rvpi_hist': rvpi_hist_portfolio,  # Portfolio-level RVPI
+                'irrlist': irrlist_portfolio  # Portfolio-level IRR
+            }
