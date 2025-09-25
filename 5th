@@ -1,0 +1,353 @@
+import pandas as pd
+import numpy as np
+import io
+from datetime import datetime
+
+
+def export_chart_data_to_excel(
+    # Portfolio data
+    existing_portfolio: pd.DataFrame,
+    cleanname_existing_portfolio: pd.DataFrame,
+    
+    # Target data
+    indv_weights: dict,
+    agg_ill_targetnav: np.ndarray,
+    current_total_nav: float,
+    asset_classes: list,
+    indv_ill_weights: np.ndarray,
+    
+    # Optimization results
+    commitment_plan_df: pd.DataFrame,
+    V_df: pd.DataFrame,
+    C_df: pd.DataFrame,
+    D_df: pd.DataFrame,
+    
+    # Parameters
+    T: int,
+    total_port_nav: float,
+    nav_growth_rate: float,
+    liquidity_limit: float,
+    liqlims: np.ndarray,
+    
+    # Summary
+    summary_df: pd.DataFrame = None,
+    
+    # File name
+    output_filename: str = "commitment_pacing_analysis.xlsx"
+) -> bytes:
+    """
+    Export all chart data to Excel with multiple sheets for different visualizations.
+    
+    Returns:
+        bytes: Excel file content as bytes for download
+    """
+    
+    excel_data_dict = {}
+    
+    # 1. Existing Portfolio Data (for current_portfolio plots)
+    excel_data_dict['Existing_Portfolio'] = cleanname_existing_portfolio
+    
+    # Portfolio summary by asset class
+    portfolio_summary = existing_portfolio.groupby('asset_class').agg({
+        'committed_cap': 'sum',
+        'current_pic': 'sum',
+        'current_cumdist': 'sum',
+        'current_nav': 'sum',
+        'uncalled': 'sum'
+    }).reset_index()
+    portfolio_summary.columns = ['Asset Class', 'Committed Capital', 'Paid In Capital', 
+                                  'Cumulative Distribution', 'NAV', 'Uncalled Capital']
+    excel_data_dict['Portfolio_Summary'] = portfolio_summary
+    
+    # 2. Target Allocation Data (for constant_target_plot)
+    target_allocation_data = pd.DataFrame({
+        'Asset Class': list(indv_weights.keys()),
+        'Target Weight (%)': [w * 100 for w in indv_weights.values()]
+    })
+    excel_data_dict['Target_Allocation'] = target_allocation_data
+    
+    # 3. Aggregate NAV Target Data (for agg_nav_target_plot)
+    periods = range(1, T + 1)
+    agg_nav_target_data = pd.DataFrame({
+        'Period': periods,
+        'Target Aggregate NAV': agg_ill_targetnav.ravel(),
+        'Current Total NAV': [current_total_nav] + [np.nan] * (T - 1)  # Only show current NAV at period 0/1
+    })
+    # Add current portfolio NAV as starting point
+    current_nav_row = pd.DataFrame({
+        'Period': [0],
+        'Target Aggregate NAV': [np.nan],
+        'Current Total NAV': [existing_portfolio['current_nav'].sum()]
+    })
+    agg_nav_target_data = pd.concat([current_nav_row, agg_nav_target_data], ignore_index=True)
+    excel_data_dict['Aggregate_NAV_Target'] = agg_nav_target_data
+    
+    # 4. Dynamic Weight Target Data (if applicable)
+    if indv_ill_weights is not None:
+        dynamic_weights_data = []
+        for period_idx in range(T):
+            for asset_idx, asset_class in enumerate(asset_classes):
+                if not np.isnan(indv_ill_weights[period_idx, asset_idx]):
+                    dynamic_weights_data.append({
+                        'Period': period_idx + 1,
+                        'Asset Class': asset_class,
+                        'Target Weight (%)': indv_ill_weights[period_idx, asset_idx] * 100
+                    })
+        if dynamic_weights_data:
+            excel_data_dict['Dynamic_Weights'] = pd.DataFrame(dynamic_weights_data)
+    
+    # 5. Commitment Plan Data (for commitment plot in nav_commitment_sep_plots)
+    commitment_summary = commitment_plan_df.copy()
+    commitment_summary['vintage'] = commitment_summary['vintage'].astype(int)
+    commitment_pivot = commitment_summary.pivot_table(
+        index='vintage', 
+        columns='asset_class', 
+        values='commitment', 
+        fill_value=0
+    ).reset_index()
+    commitment_pivot.rename(columns={'vintage': 'Year'}, inplace=True)
+    excel_data_dict['Commitment_Plan'] = commitment_pivot
+    
+    # Commitment plan detailed (stacked bar data)
+    excel_data_dict['Commitment_Plan_Detail'] = commitment_summary
+    
+    # 6. NAV Forecast Data (for NAV plot in nav_commitment_sep_plots)
+    nav_forecast_data = V_df.copy()
+    nav_forecast_pivot = nav_forecast_data.pivot_table(
+        index='period',
+        columns='asset_class',
+        values='nav',
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    nav_forecast_pivot.rename(columns={'period': 'Period'}, inplace=True)
+    excel_data_dict['NAV_Forecast'] = nav_forecast_pivot
+    
+    # NAV forecast detailed (for stacked area)
+    excel_data_dict['NAV_Forecast_Detail'] = V_df[['period', 'asset_class', 'vintage', 'nav']].copy()
+    
+    # 7. Portfolio Weights Over Time (for weights plot in nav_commitment_sep_plots)
+    weights_data = V_df.copy()
+    weights_data['Total NAV'] = weights_data.groupby('period')['nav'].transform('sum')
+    weights_data['Weight (%)'] = np.where(
+        weights_data['Total NAV'] == 0,
+        0,
+        (weights_data['nav'] / weights_data['Total NAV']) * 100
+    )
+    
+    weights_pivot = weights_data.pivot_table(
+        index='period',
+        columns='asset_class',
+        values='Weight (%)',
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    weights_pivot.rename(columns={'period': 'Period'}, inplace=True)
+    excel_data_dict['Portfolio_Weights'] = weights_pivot
+    
+    # 8. Cash Flow Data (for cf_plot)
+    contributions_by_period = C_df.groupby('period')['C'].sum().reset_index()
+    distributions_by_period = D_df.groupby('period')['D'].sum().reset_index()
+    
+    cashflow_data = pd.merge(
+        contributions_by_period, 
+        distributions_by_period, 
+        on='period', 
+        how='outer'
+    ).fillna(0)
+    
+    cashflow_data.rename(columns={
+        'period': 'Period',
+        'C': 'Contributions',
+        'D': 'Distributions'
+    }, inplace=True)
+    
+    # Calculate net cashflow and cumulative
+    cashflow_data['Net Cashflow'] = cashflow_data['Distributions'] - cashflow_data['Contributions']
+    cashflow_data['Cumulative Net Cashflow'] = cashflow_data['Net Cashflow'].cumsum()
+    
+    # Add liquidity limits if available
+    if liqlims is not None and len(liqlims) > 0:
+        cashflow_data['Liquidity Limit'] = liqlims.ravel()[:len(cashflow_data)]
+    
+    # For bar chart visualization (contributions as negative)
+    cashflow_data['Contributions (Bar)'] = -1 * cashflow_data['Contributions']
+    cashflow_data['Distributions (Bar)'] = cashflow_data['Distributions']
+    
+    excel_data_dict['Cashflow_Analysis'] = cashflow_data
+    
+    # 9. Detailed Cash Flows by Asset Class
+    contributions_detail = C_df.pivot_table(
+        index='period',
+        columns='asset_class',
+        values='C',
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    contributions_detail.rename(columns={'period': 'Period'}, inplace=True)
+    excel_data_dict['Contributions_by_AssetClass'] = contributions_detail
+    
+    distributions_detail = D_df.pivot_table(
+        index='period',
+        columns='asset_class',
+        values='D',
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    distributions_detail.rename(columns={'period': 'Period'}, inplace=True)
+    excel_data_dict['Distributions_by_AssetClass'] = distributions_detail
+    
+    # 10. Summary Table (if provided)
+    if summary_df is not None:
+        # Reset index to make Year a column if it's currently the index
+        if summary_df.index.name:
+            summary_table = summary_df.reset_index()
+        else:
+            summary_table = summary_df.copy()
+        excel_data_dict['Summary_Table'] = summary_table
+    
+    # 11. Parameters Sheet (for reference)
+    params_data = pd.DataFrame({
+        'Parameter': [
+            'Total Portfolio NAV',
+            'NAV Growth Rate (%)',
+            'Illiquid Target (%)',
+            'Time Horizon (Years)',
+            'Liquidity Limit',
+            'Current Illiquid NAV',
+            'Target Illiquid NAV (Year 1)',
+            'Number of Asset Classes'
+        ],
+        'Value': [
+            total_port_nav,
+            nav_growth_rate * 100,
+            (agg_ill_targetnav[0] / total_port_nav) * 100 if len(agg_ill_targetnav) > 0 else 0,
+            T,
+            liquidity_limit,
+            existing_portfolio['current_nav'].sum(),
+            agg_ill_targetnav[0] if len(agg_ill_targetnav) > 0 else 0,
+            len(asset_classes)
+        ]
+    })
+    excel_data_dict['Parameters'] = params_data
+    
+    # Create Excel file in memory
+    output = io.BytesIO()
+    
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        
+        # Define formats
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#D3D3D3',
+            'border': 1
+        })
+        
+        number_format = workbook.add_format({'num_format': '#,##0.00'})
+        percent_format = workbook.add_format({'num_format': '0.00%'})
+        
+        # Write each dataframe to a separate sheet
+        for sheet_name, df in excel_data_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            # Get the worksheet
+            worksheet = writer.sheets[sheet_name]
+            
+            # Format the header row
+            for col_num, value in enumerate(df.columns.values):
+                worksheet.write(0, col_num, value, header_format)
+            
+            # Auto-adjust column widths
+            for i, col in enumerate(df.columns):
+                # Find maximum length in column
+                column_len = df[col].astype(str).map(len).max()
+                column_len = max(column_len, len(col)) + 2
+                worksheet.set_column(i, i, min(column_len, 50))
+    
+    # Get the Excel file content
+    output.seek(0)
+    return output.getvalue()
+
+
+# Integration function to be called from your main code
+def generate_excel_export(
+    existing_portfolio,
+    cleanname_existing_portfolio,
+    indv_weights,
+    agg_ill_targetnav,
+    asset_classes,
+    indv_ill_weights,
+    commitment_plan_df,
+    V_df,
+    C_df,
+    D_df,
+    T,
+    total_port_nav,
+    nav_growth_rate,
+    liquidity_limit,
+    liqlims,
+    summary_df=None
+):
+    """
+    Wrapper function to generate Excel export with all chart data.
+    This can be called from your Streamlit app.
+    """
+    
+    # Calculate current total NAV
+    current_total_nav = existing_portfolio['current_nav'].sum()
+    
+    # Generate Excel file
+    excel_bytes = export_chart_data_to_excel(
+        existing_portfolio=existing_portfolio,
+        cleanname_existing_portfolio=cleanname_existing_portfolio,
+        indv_weights=indv_weights,
+        agg_ill_targetnav=agg_ill_targetnav,
+        current_total_nav=current_total_nav,
+        asset_classes=asset_classes,
+        indv_ill_weights=indv_ill_weights,
+        commitment_plan_df=commitment_plan_df,
+        V_df=V_df,
+        C_df=C_df,
+        D_df=D_df,
+        T=T,
+        total_port_nav=total_port_nav,
+        nav_growth_rate=nav_growth_rate,
+        liquidity_limit=liquidity_limit,
+        liqlims=liqlims,
+        summary_df=summary_df
+    )
+    
+    return excel_bytes
+
+
+# Example usage in your Streamlit app:
+"""
+# Add this after generating all your plots and data:
+
+# Generate Excel export
+excel_data = generate_excel_export(
+    existing_portfolio=existing_portfolio,
+    cleanname_existing_portfolio=cleanname_existing_portfolio,
+    indv_weights=indv_weights,
+    agg_ill_targetnav=agg_ill_targetnav,
+    asset_classes=asset_classes,
+    indv_ill_weights=indv_ill_weights,
+    commitment_plan_df=commitment_plan_df,
+    V_df=V_df,
+    C_df=C_df,
+    D_df=D_df,
+    T=T,
+    total_port_nav=total_port_nav,
+    nav_growth_rate=nav_growth_rate,
+    liquidity_limit=liquidity_limit,
+    liqlims=liqlims,
+    summary_df=summary_df
+)
+
+# Save the Excel file directly to disk
+output_filename = f"commitment_pacing_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+with open(output_filename, 'wb') as f:
+    f.write(excel_data)
+
+print(f"Excel file saved as: {output_filename}")
