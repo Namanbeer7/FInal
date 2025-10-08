@@ -1,0 +1,210 @@
+# Fix for the export_commitment_optimization_charts_to_ppt function
+
+def export_commitment_optimization_charts_to_ppt(
+    template_path,
+    output_path,
+    # Data arguments
+    agg_ill_targetnav_np,
+    indv_weights_dict,
+    V_df_data,
+    C_df_data,
+    D_df_data,
+    commitment_plan_df,
+    liqlims_data_arr,
+    T_periods,
+    # Context arguments
+    existing_portfolio_df,
+    granularity_str,
+    total_port_nav,  # ADD THIS PARAMETER
+    nav_growth_rate,  # ADD THIS PARAMETER
+    # Optimization-specific parameters
+    gamma=None,
+    target_delay=None,
+    smoothing_weight=None,
+    min_non_zero_commit=None,
+    min_commit=None,
+    max_commit=None,
+    liquidity_limit=None
+):
+    """
+    Export Commitment Optimization charts and tables to PowerPoint
+    Includes additional commitment-specific visualizations
+    """
+    try:
+        prs = Presentation(template_path)
+        
+        # Define chart configurations including commitment-specific charts
+        chart_configs = [
+            {
+                "name": "cht_aggregate_nav",
+                "data_func": prepare_aggregate_nav_data,
+                "args": (agg_ill_targetnav_np, existing_portfolio_df, T_periods),
+                "chart_type": "line",
+                "display_name": "Aggregate NAV Target"
+            },
+            {
+                "name": "cht_sub_alloc_target",
+                "data_func": prepare_sub_allocation_targets_data,
+                "args": (indv_weights_dict,),
+                "chart_type": "bar",
+                "display_name": "Sub-Allocation Targets"
+            },
+            {
+                "name": "cht_commitment_plan",
+                "data_func": prepare_commitment_plan_data,
+                "args": (commitment_plan_df, T_periods),
+                "chart_type": "bar",
+                "display_name": "Commitment Plan"
+            },
+            {
+                "name": "cht_nav_forecast",
+                "data_func": prepare_nav_forecast_data_optimized,
+                "args": (V_df_data, agg_ill_targetnav_np, granularity_str, T_periods),
+                "chart_type": "combo",
+                "display_name": "NAV Forecast (Absolute NAV & Target Line)"
+            },
+            {
+                "name": "cht_sub_alloc_pm",
+                "data_func": prepare_sub_allocation_pm_data,
+                "args": (V_df_data, granularity_str),
+                "chart_type": "area",
+                "display_name": "Sub-Allocation of Private Markets"
+            },
+            {
+                "name": "cht_cashflows",
+                "data_func": prepare_cashflows_chart_data,
+                "args": (C_df_data, D_df_data, liqlims_data_arr, T_periods),
+                "chart_type": "combo",
+                "display_name": "Cashflows Plot"
+            }
+        ]
+        
+        # Continue with rest of the function...
+        # [Rest of the function remains the same]
+        
+        # When calling prepare_summary_table_for_ppt, make sure to pass the parameters:
+        if commitment_plan_df is not None and not commitment_plan_df.empty:
+            summary_df = prepare_summary_table_for_ppt(
+                V_df_data, C_df_data, D_df_data, commitment_plan_df, 
+                total_port_nav, nav_growth_rate  # These were undefined before
+            )
+            
+            # Add tables to presentation
+            add_commitment_optimization_tables_to_ppt(
+                prs, commitment_plan_df, summary_df
+            )
+            st.success("Added commitment and summary tables to presentation")
+            
+        # ... rest of function
+        
+    except Exception as e:
+        st.error(f"Critical error in export: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return False
+
+
+# Also fix the prepare_sub_allocation_pm_data function
+def prepare_sub_allocation_pm_data(V_df_data, granularity_str=None):
+    """
+    Prepares data for Sub-Allocation of Private Markets chart (percentages)
+    Fixed to handle 'asset_class' column properly
+    """
+    # Check if V_df_data is valid
+    if V_df_data is None or V_df_data.empty:
+        return pd.DataFrame(columns=['Period'])
+    
+    # Check if 'asset_class' column exists
+    if 'asset_class' not in V_df_data.columns:
+        st.error("V_df_data is missing 'asset_class' column")
+        return pd.DataFrame(columns=['Period'])
+    
+    # Handle case sensitivity for column names
+    period_col = 'Period' if 'Period' in V_df_data.columns else 'period'
+    nav_col = 'NAV' if 'NAV' in V_df_data.columns else 'nav'
+    
+    # Create a copy to avoid modifying original data
+    V_df_copy = V_df_data.copy()
+    
+    # Create combined series column
+    V_df_copy['combined_series'] = V_df_copy['asset_class'].astype(str) + '_' + V_df_copy['vintage'].astype(str)
+    
+    # Create pivot table
+    pivot_df = V_df_copy.pivot_table(
+        index=period_col,
+        columns='combined_series',
+        values=nav_col,
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    # Rename period column to standardized name
+    pivot_df.rename(columns={period_col: 'Period'}, inplace=True)
+    
+    # Filter out zero columns
+    value_columns = [col for col in pivot_df.columns if col != 'Period']
+    column_sums = pivot_df[value_columns].sum()
+    non_zero_columns = column_sums[column_sums.abs() > 1e-9].index.tolist()
+    
+    if not non_zero_columns:
+        st.warning("All series have zero values")
+        return pd.DataFrame(columns=['Period'])
+    
+    # Keep only non-zero columns
+    pivot_df = pivot_df[['Period'] + non_zero_columns]
+    
+    # Calculate percentages
+    pivot_df['Total_NAV'] = pivot_df[non_zero_columns].sum(axis=1)
+    
+    for col in non_zero_columns:
+        pivot_df[col] = pivot_df.apply(
+            lambda row: (row[col] / row['Total_NAV'] * 100) if row['Total_NAV'] > 0 else 0,
+            axis=1
+        )
+    
+    # Drop the Total_NAV column
+    pivot_df = pivot_df.drop(columns=['Total_NAV'])
+    
+    # Sort columns
+    sorted_columns = sorted([col for col in pivot_df.columns if col != 'Period'])
+    final_df = pivot_df[['Period'] + sorted_columns]
+    
+    return final_df
+
+
+# Fix the prepare_commitment_plan_data function
+def prepare_commitment_plan_data(commitment_plan_df, T_periods):
+    """
+    Prepare commitment plan data for bar chart visualization
+    Fixed to handle 'asset_class' column properly
+    """
+    if commitment_plan_df is None or commitment_plan_df.empty:
+        return pd.DataFrame(columns=['Year'])
+    
+    # Check for required columns with case handling
+    asset_class_col = None
+    for possible_name in ['asset_class', 'Asset_Class', 'AssetClass']:
+        if possible_name in commitment_plan_df.columns:
+            asset_class_col = possible_name
+            break
+    
+    if asset_class_col is None:
+        st.error(f"commitment_plan_df is missing asset_class column. Available columns: {list(commitment_plan_df.columns)}")
+        return pd.DataFrame(columns=['Year'])
+    
+    vintage_col = 'vintage' if 'vintage' in commitment_plan_df.columns else 'Vintage'
+    commitment_col = 'commitment' if 'commitment' in commitment_plan_df.columns else 'Commitment'
+    
+    # Create pivot table with years as index and asset classes as columns
+    commitment_pivot = commitment_plan_df.copy()
+    commitment_pivot['Year'] = datetime.now().year + commitment_pivot[vintage_col]
+    
+    pivot_df = commitment_pivot.pivot_table(
+        index='Year',
+        columns=asset_class_col,
+        values=commitment_col,
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    return pivot_df
