@@ -1,0 +1,93 @@
+def prepare_asset_class_vintage_pivot(V_df_data, value_column='nav'):
+    """
+    Helper to create a pivot table with 'AssetClass_Vintage' series.
+    UPDATED: This version filters out any series (columns) that are zero across all periods.
+    FIXED: Handles case sensitivity for column names
+    """
+    if not isinstance(V_df_data, pd.DataFrame) or V_df_data.empty:
+        st.warning(f"V_df for {value_column} pivot is empty.")
+        return pd.DataFrame(columns=['Period'])
+    
+    # Handle case sensitivity for column names
+    period_col = 'Period' if 'Period' in V_df_data.columns else 'period'
+    nav_col = 'NAV' if 'NAV' in V_df_data.columns else 'nav'
+    value_col = value_column.upper() if value_column.upper() in V_df_data.columns else value_column.lower()
+    
+    # Check for required columns with actual names
+    required_cols = {'asset_class', 'vintage', period_col, value_col}
+    if not required_cols.issubset(set(V_df_data.columns)):
+        missing = required_cols - set(V_df_data.columns)
+        st.error(f"V_df missing columns for pivot: {missing}")
+        st.error(f"Available columns: {list(V_df_data.columns)}")
+        return pd.DataFrame(columns=['Period'])
+    
+    V_df_copy = V_df_data.copy()
+    V_df_copy['combined_series'] = V_df_copy['asset_class'].astype(str) + '_' + V_df_copy['vintage'].astype(str)
+    
+    # Use the actual column names in pivot
+    pivot_df = V_df_copy.pivot_table(
+        index=period_col, 
+        columns='combined_series', 
+        values=value_col,
+        aggfunc='sum', 
+        fill_value=0
+    ).reset_index()
+    
+    # Standardize the period column name to 'Period'
+    if period_col != 'Period':
+        pivot_df.rename(columns={period_col: 'Period'}, inplace=True)
+    
+    # Filter out zero columns
+    value_columns = [col for col in pivot_df.columns if col != 'Period']
+    column_sums = pivot_df[value_columns].sum()
+    zero_sum_columns = column_sums[column_sums.abs() < 1e-9].index.tolist()
+    
+    if zero_sum_columns:
+        st.write(f"Filtering out {len(zero_sum_columns)} zero-value series: {zero_sum_columns[:5]}...")
+        pivot_df_filtered = pivot_df.drop(columns=zero_sum_columns)
+    else:
+        pivot_df_filtered = pivot_df
+    
+    # Sort remaining columns
+    remaining_value_cols = sorted([col for col in pivot_df_filtered.columns if col != 'Period'])
+    final_df = pivot_df_filtered[['Period'] + remaining_value_cols]
+    
+    return final_df
+
+
+
+    def prepare_commitment_plan_data(commitment_plan_df, T_periods):
+    """
+    Prepare commitment plan data for bar chart visualization
+    Fixed to handle 'asset_class' column properly
+    """
+    if commitment_plan_df is None or commitment_plan_df.empty:
+        return pd.DataFrame(columns=['Year'])
+    
+    # Check for required columns with case handling
+    asset_class_col = None
+    for possible_name in ['asset_class', 'Asset_Class', 'AssetClass']:
+        if possible_name in commitment_plan_df.columns:
+            asset_class_col = possible_name
+            break
+    
+    if asset_class_col is None:
+        st.error(f"commitment_plan_df is missing asset_class column. Available columns: {list(commitment_plan_df.columns)}")
+        return pd.DataFrame(columns=['Year'])
+    
+    vintage_col = 'vintage' if 'vintage' in commitment_plan_df.columns else 'Vintage'
+    commitment_col = 'commitment' if 'commitment' in commitment_plan_df.columns else 'Commitment'
+    
+    # Create pivot table with years as index and asset classes as columns
+    commitment_pivot = commitment_plan_df.copy()
+    commitment_pivot['Year'] = datetime.now().year + commitment_pivot[vintage_col]
+    
+    pivot_df = commitment_pivot.pivot_table(
+        index='Year',
+        columns=asset_class_col,
+        values=commitment_col,
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    return pivot_df
