@@ -1,0 +1,366 @@
+# Add these functions to your cashflow_ppt_export.py file
+
+def prepare_commitment_plan_data(commitment_plan_df, T_periods):
+    """
+    Prepare commitment plan data for bar chart visualization
+    Shows commitments by asset class and year
+    """
+    if commitment_plan_df is None or commitment_plan_df.empty:
+        return pd.DataFrame(columns=['Year'])
+    
+    # Create pivot table with years as index and asset classes as columns
+    commitment_pivot = commitment_plan_df.copy()
+    commitment_pivot['Year'] = datetime.now().year + commitment_pivot['vintage']
+    
+    pivot_df = commitment_pivot.pivot_table(
+        index='Year',
+        columns='asset_class',
+        values='commitment',
+        aggfunc='sum',
+        fill_value=0
+    ).reset_index()
+    
+    return pivot_df
+
+
+def prepare_summary_table_for_ppt(V_df, C_df, D_df, commitment_plan_df, total_port_nav, nav_growth_rate):
+    """
+    Prepare summary table data in a format suitable for PowerPoint table
+    """
+    summary_df = summary_table(V_df, C_df, D_df, commitment_plan_df, total_port_nav, nav_growth_rate)
+    
+    # Convert to a format better for PowerPoint (transpose back for table display)
+    summary_transposed = summary_df.T.reset_index()
+    summary_transposed.columns = ['Year'] + list(summary_df.index)
+    
+    return summary_transposed
+
+
+def add_commitment_optimization_tables_to_ppt(presentation, commitment_plan_df, summary_df, slide_index=None):
+    """
+    Add commitment and summary tables to PowerPoint presentation
+    Creates new slide if slide_index not specified
+    """
+    if slide_index is None:
+        # Add a new slide with table layout
+        slide_layout = presentation.slide_layouts[5]  # Title and Content layout
+        slide = presentation.slides.add_slide(slide_layout)
+        slide.shapes.title.text = "Commitment Optimization Results"
+    else:
+        slide = presentation.slides[slide_index]
+    
+    # Add Commitment Table
+    if commitment_plan_df is not None and not commitment_plan_df.empty:
+        commitment_table_data = commitment_table(commitment_plan_df)
+        
+        # Position and dimensions for commitment table
+        left = Inches(0.5)
+        top = Inches(2)
+        width = Inches(9)
+        height = Inches(2)
+        
+        # Create table
+        rows = len(commitment_table_data) + 1  # +1 for header
+        cols = len(commitment_table_data.columns) + 1  # +1 for index
+        
+        table = slide.shapes.add_table(rows, cols, left, top, width, height).table
+        
+        # Set header row
+        table.cell(0, 0).text = "Asset Class"
+        for col_idx, col_name in enumerate(commitment_table_data.columns):
+            table.cell(0, col_idx + 1).text = str(col_name)
+        
+        # Fill data
+        for row_idx, (index_val, row_data) in enumerate(commitment_table_data.iterrows()):
+            table.cell(row_idx + 1, 0).text = str(index_val)
+            for col_idx, value in enumerate(row_data):
+                table.cell(row_idx + 1, col_idx + 1).text = str(value)
+        
+        # Format table
+        for row in range(rows):
+            for col in range(cols):
+                cell = table.cell(row, col)
+                cell.text_frame.paragraphs[0].font.size = Pt(10)
+                if row == 0:  # Header row
+                    cell.text_frame.paragraphs[0].font.bold = True
+    
+    return slide
+
+
+def export_commitment_optimization_charts_to_ppt(
+    template_path,
+    output_path,
+    # Data arguments
+    agg_ill_targetnav_np,
+    indv_weights_dict,
+    V_df_data,
+    C_df_data,
+    D_df_data,
+    commitment_plan_df,
+    liqlims_data_arr,
+    T_periods,
+    # Context arguments
+    existing_portfolio_df,
+    granularity_str,
+    # Optimization-specific parameters
+    gamma=None,
+    target_delay=None,
+    smoothing_weight=None,
+    min_non_zero_commit=None,
+    min_commit=None,
+    max_commit=None,
+    liquidity_limit=None
+):
+    """
+    Export Commitment Optimization charts and tables to PowerPoint
+    Includes additional commitment-specific visualizations
+    """
+    try:
+        prs = Presentation(template_path)
+        
+        # Define chart configurations including commitment-specific charts
+        chart_configs = [
+            {
+                "name": "cht_aggregate_nav",
+                "data_func": prepare_aggregate_nav_data,
+                "args": (agg_ill_targetnav_np, existing_portfolio_df, T_periods),
+                "chart_type": "line",
+                "display_name": "Aggregate NAV Target"
+            },
+            {
+                "name": "cht_sub_alloc_target",
+                "data_func": prepare_sub_allocation_targets_data,
+                "args": (indv_weights_dict,),
+                "chart_type": "bar",
+                "display_name": "Sub-Allocation Targets"
+            },
+            {
+                "name": "cht_commitment_plan",  # Additional chart for optimization
+                "data_func": prepare_commitment_plan_data,
+                "args": (commitment_plan_df, T_periods),
+                "chart_type": "bar",
+                "display_name": "Commitment Plan"
+            },
+            {
+                "name": "cht_nav_forecast",
+                "data_func": prepare_nav_forecast_data_optimized,
+                "args": (V_df_data, agg_ill_targetnav_np, granularity_str, T_periods),
+                "chart_type": "combo",
+                "display_name": "NAV Forecast (Absolute NAV & Target Line)"
+            },
+            {
+                "name": "cht_sub_alloc_pm",
+                "data_func": prepare_sub_allocation_pm_data,
+                "args": (V_df_data, granularity_str),
+                "chart_type": "area",
+                "display_name": "Sub-Allocation of Private Markets"
+            },
+            {
+                "name": "cht_cashflows",
+                "data_func": prepare_cashflows_chart_data,
+                "args": (C_df_data, D_df_data, liqlims_data_arr, T_periods),
+                "chart_type": "combo",
+                "display_name": "Cashflows Plot"
+            }
+        ]
+        
+        charts_updated_count = 0
+        chart_slide_mapping = {}
+        
+        # Process all charts
+        for config in chart_configs:
+            chart_name_in_template = config["name"]
+            st.write(f"--- Processing chart: {chart_name_in_template} ---")
+            
+            try:
+                chart_data_df = config["data_func"](*config["args"])
+                
+                if not isinstance(chart_data_df, pd.DataFrame) or chart_data_df.empty:
+                    st.warning(f"No data generated for {chart_name_in_template}. Skipping.")
+                    continue
+                
+                # Validate DataFrame structure
+                if chart_name_in_template == "cht_sub_alloc_target":
+                    if 'Asset Class' not in chart_data_df.columns:
+                        st.warning(f"Missing 'Asset Class' column for {chart_name_in_template}. Skipping.")
+                        continue
+                elif chart_name_in_template == "cht_commitment_plan":
+                    if 'Year' not in chart_data_df.columns:
+                        st.warning(f"Missing 'Year' column for {chart_name_in_template}. Skipping.")
+                        continue
+                elif 'Period' not in chart_data_df.columns:
+                    st.warning(f"Missing 'Period' column for {chart_name_in_template}. Skipping.")
+                    continue
+                
+                st.write(f"Data for {chart_name_in_template} prepared successfully")
+                
+            except Exception as e:
+                st.error(f"Error preparing data for {chart_name_in_template}: {str(e)}")
+                continue
+            
+            # Find and update chart in presentation
+            chart_found = False
+            for slide_idx, slide in enumerate(prs.slides):
+                for shape in slide.shapes:
+                    if shape.name == chart_name_in_template:
+                        st.write(f"Found shape '{shape.name}' on slide {slide_idx + 1}")
+                        
+                        if not shape.has_chart:
+                            st.error(f"Shape '{shape.name}' is not a chart.")
+                            continue
+                        
+                        try:
+                            update_chart_with_data(
+                                shape.chart, 
+                                chart_data_df, 
+                                chart_name_for_logging=config.get('display_name', chart_name_in_template)
+                            )
+                            st.success(f"Updated chart '{shape.name}' on slide {slide_idx + 1}")
+                            charts_updated_count += 1
+                            chart_found = True
+                            chart_slide_mapping[chart_name_in_template] = slide_idx
+                            break
+                        except Exception as e:
+                            st.error(f"Error updating chart '{shape.name}': {str(e)}")
+                            break
+                
+                if chart_found:
+                    break
+            
+            if not chart_found and chart_name_in_template == "cht_commitment_plan":
+                st.info(f"Chart '{chart_name_in_template}' not found in template. Will add as table.")
+        
+        # Add commitment and summary tables
+        if commitment_plan_df is not None and not commitment_plan_df.empty:
+            # Prepare summary table
+            summary_df = prepare_summary_table_for_ppt(
+                V_df_data, C_df_data, D_df_data, commitment_plan_df, 
+                total_port_nav, nav_growth_rate
+            )
+            
+            # Add tables to presentation
+            add_commitment_optimization_tables_to_ppt(
+                prs, commitment_plan_df, summary_df
+            )
+            st.success("Added commitment and summary tables to presentation")
+        
+        # Add double legends for charts that need them
+        if V_df_data is not None and not V_df_data.empty:
+            st.write("Adding double legends to charts...")
+            legends_added = 0
+            
+            for chart_name in ["cht_sub_alloc_pm", "cht_nav_forecast"]:
+                if chart_name in chart_slide_mapping:
+                    slide_idx = chart_slide_mapping[chart_name]
+                    slide = prs.slides[slide_idx]
+                    add_custom_legend_textbox(slide, V_df_data, Inches(7.5), Inches(1.5))
+                    st.write(f"Added legend to {chart_name} on slide {slide_idx + 1}")
+                    legends_added += 1
+            
+            st.write(f"Added {legends_added} double legends")
+        
+        # Save presentation
+        prs.save(output_path)
+        st.write(f"PowerPoint saved to '{output_path}'. Updated {charts_updated_count} charts.")
+        
+        return charts_updated_count > 0
+        
+    except Exception as e:
+        st.error(f"Critical error in export: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
+        return False
+
+
+def add_ppt_export_section_commitment_optimization(
+    agg_ill_targetnav, indv_weights, V_df, commitment_plan_df,
+    existing_portfolio, C_df, D_df, total_port_nav, nav_growth_rate,
+    client_name, granularity, T, liqlims,
+    gamma=None, target_delay=None, smoothing_weight=None,
+    min_non_zero_commit=None, min_commit=None, max_commit=None,
+    liquidity_limit=None
+):
+    """
+    Add PowerPoint export section for Commitment Optimization in Streamlit sidebar
+    """
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Export to PowerPoint")
+    
+    template_file = st.sidebar.file_uploader(
+        "Upload PowerPoint Template", 
+        type="pptx", 
+        key="optimization_ppt_template"
+    )
+    
+    # Session state for generated file path
+    if "generated_optimization_ppt_path" not in st.session_state:
+        st.session_state.generated_optimization_ppt_path = None
+    
+    if template_file is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+            tmp_file.write(template_file.getbuffer())
+            temp_template_path = tmp_file.name
+        
+        if st.sidebar.button("Generate PowerPoint", key="generate_ppt_optimization"):
+            # Calculate current aggregate NAV
+            current_agg_nav = 0.0
+            if existing_portfolio is not None and 'current_nav' in existing_portfolio.columns:
+                current_agg_nav = existing_portfolio['current_nav'].sum()
+            
+            # Validate required data
+            if V_df is None or agg_ill_targetnav is None or indv_weights is None:
+                st.sidebar.error("Required data not available. Please run the optimization first.")
+            else:
+                st.session_state.generated_optimization_ppt_path = None
+                output_file = f"{client_name}_commitment_optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+                
+                with st.spinner("Generating PowerPoint with optimization results..."):
+                    chart_success = export_commitment_optimization_charts_to_ppt(
+                        template_path=temp_template_path,
+                        output_path=output_file,
+                        agg_ill_targetnav_np=agg_ill_targetnav,
+                        indv_weights_dict=indv_weights,
+                        V_df_data=V_df,
+                        C_df_data=C_df,
+                        D_df_data=D_df,
+                        commitment_plan_df=commitment_plan_df,
+                        liqlims_data_arr=liqlims.flatten() if liqlims is not None else None,
+                        T_periods=T,
+                        existing_portfolio_df=existing_portfolio,
+                        granularity_str=granularity,
+                        gamma=gamma,
+                        target_delay=target_delay,
+                        smoothing_weight=smoothing_weight,
+                        min_non_zero_commit=min_non_zero_commit,
+                        min_commit=min_commit,
+                        max_commit=max_commit,
+                        liquidity_limit=liquidity_limit
+                    )
+                
+                if chart_success:
+                    st.session_state.generated_optimization_ppt_path = output_file
+                    st.sidebar.success("PowerPoint generated successfully!")
+                else:
+                    st.sidebar.error("Failed to generate PowerPoint.")
+        
+        # Clean up temp file
+        try:
+            if 'temp_template_path' in locals() and os.path.exists(temp_template_path):
+                os.unlink(temp_template_path)
+        except Exception as e:
+            st.warning(f"Could not delete temp file: {e}")
+    
+    # Download button
+    if st.session_state.generated_optimization_ppt_path and \
+       os.path.exists(st.session_state.generated_optimization_ppt_path):
+        with open(st.session_state.generated_optimization_ppt_path, "rb") as file:
+            st.sidebar.download_button(
+                label="Download PowerPoint",
+                data=file,
+                file_name=os.path.basename(st.session_state.generated_optimization_ppt_path),
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="download_optimization_ppt"
+            )
+    elif st.session_state.generated_optimization_ppt_path:
+        st.sidebar.warning("Generated file no longer exists. Please generate again.")
+        st.session_state.generated_optimization_ppt_path = None
