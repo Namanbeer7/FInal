@@ -1,0 +1,337 @@
+import streamlit as st
+import pandas as pd
+import sys
+import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from IPython.display import display
+import json
+import io
+# import cplex
+import plotnine as p9
+from datetime import datetime
+import tempfile
+import os
+
+from commitment_pacing.pacingprob import commitmentplan
+from commitment_pacing.additional_plots import nav_commitment_sep_plots, liq_plots2, cf_plot
+from commitment_pacing.additional_plots import current_portfolio_facetplot, current_portfolio_seperateplots
+from commitment_pacing.additional_plots import constant_target_plot, agg_nav_target_plot, dynamic_weight_target_plot
+from commitment_pacing.pacingprob import nav_plots, liq_plots
+# from commitment_pacing.pacingblkops import commitmentplan_blkops, create_blkops_files, parse_blkops_results
+from commitment_pacing.pacingprob import nav_plots, liq_plots
+
+from commitment_pacing.additional_plots import nav_commitment_sep_plots, liq_plots2, cf_plot
+from commitment_pacing.additional_plots import current_portfolio_facetplot, current_portfolio_seperateplots
+from commitment_pacing.additional_plots import constant_target_plot, agg_nav_target_plot
+
+from export.cashflow_ppt_export import add_ppt_export_section_cashflow, add_ppt_export_section_commitment_optimization
+from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+
+ALADDIN_COLORS = [
+    '#0088C5', '#FFCE00', '#FF4713', '#FC9FAF', '#9E79D9', '#F4B223',
+]
+
+# Read TA Model Parameters from JSON file
+config_file = 'ta_params_eth.json'
+with open(config_file) as json_data:
+    ta_params = json.load(json_data)
+# Check if the key exists and rename it
+if 'PE - Direct/Co-inves' in ta_params:
+    ta_params['PE - Direct/Co-investment'] = ta_params.pop('PE - Direct/Co-inves')
+
+def commitment_table(commitment_plan_df):
+    commitment_plan_df2 = commitment_plan_df.rename(columns = {'asset_class':'Asset Class', 'vintage':'Year'})
+    # Rename the Year column starting with the current year and incrementing by one for each subsequent row
+    current_year = datetime.now().year
+    commitment_plan_df2['Year'] = current_year + commitment_plan_df2['Year']
+    
+    # Group by Asset Class and Year, and sum the commitments
+    grouped_df = commitment_plan_df2.groupby(['Asset Class', 'Year'])['commitment'].sum().unstack().fillna(0)
+    # Format the values to one decimal place
+    grouped_df = grouped_df.applymap(lambda x: f"{x:.1f}")
+    return grouped_df
+
+def summary_table(V_df, C_df, D_df, commitment_plan_df, total_port_nav, nav_growth_rate):
+    navs_df = V_df.groupby('Period')['NAV'].sum().reset_index().rename(columns={'Period': 'Year', 'NAV': 'NAV'})
+    contributions_df = C_df.groupby('Period')['C'].sum().reset_index().rename(columns={'Period': 'Year', 'C': 'Contribution'})
+    distributions_df = D_df.groupby('Period')['D'].sum().reset_index().rename(columns={'Period': 'Year', 'D': 'Distribution'})
+    commitments_df = commitment_plan_df.groupby('vintage')['commitment'].sum().reset_index().rename(columns={'vintage': 'Year', 'commitment': 'Proposed Commitments'})
+
+    summary_df = commitments_df.merge(navs_df, on='Year').merge(contributions_df, on='Year').merge(distributions_df, on='Year')
+
+    for col in ["Proposed Commitments", "NAV", "Contribution", "Distribution"]:
+        if col in summary_df:
+            summary_df[col] = summary_df[col].fillna(0.0)
+
+    summary_df['Net Cashflow'] = summary_df['Distribution'] - summary_df['Contribution']
+    curr_year = datetime.now().year
+    # Calculate Alts %
+    summary_df['Alts %'] = summary_df.apply(lambda row: f"{((row['NAV'] / (total_port_nav * (1 + nav_growth_rate) ** (int(row['Year']) - curr_year))) * 100):.1f}%", axis=1)
+
+    summary_df['Year'] = range(curr_year, curr_year + len(summary_df))
+
+    # Format all values to one decimal place except for the Year column
+    for col in summary_df.columns:
+        if col != 'Year':
+            summary_df[col] = summary_df[col].apply(lambda x: f"{x:.1f}" if isinstance(x, (int, float)) else x)
+
+    # Reorder columns
+    summary_df = summary_df[['Year', 'Proposed Commitments', 'Contribution', 'Distribution', 'Net Cashflow', 'NAV', 'Alts %']]
+
+    summary_df = summary_df.set_index('Year').T
+
+    return summary_df
+
+def create_existing_portfolio(df_pos, ticker, ta_params, granularity):
+    existing_port = df_pos[df_pos['parent']==ticker]
+    
+    # Rename columns and modify values as specified
+    existing_port = existing_port.rename(columns={
+        'fund_name': 'FUND',
+        'commit_date': 'fund_initialdate',
+        'commitment': 'committed_cap',
+        'called_capital': 'current_pic',
+        'distributions': 'current_cumdist',
+        'nav': 'current_nav'
+    })
+    
+    # Calculate fund_age based on the current year and the year column
+    current_year = datetime.now().year
+    existing_port['fund_age'] = current_year - existing_port['year']
+    
+    # Operations
+    existing_port['committed_cap'] = existing_port['committed_cap'] / 1e6
+    existing_port['current_pic'] = existing_port['current_pic'] / 1e6
+    existing_port['current_cumdist'] = existing_port['current_cumdist'] / 1e6
+    existing_port['current_nav'] = existing_port['current_nav'] / 1e6
+    
+    # Calculate uncalled as (committed_cap - current_pic)
+    existing_port['uncalled'] = existing_port['committed_cap'] - existing_port['current_pic']
+    
+    #Map TA parameters based on asset class
+    existing_port['ParameterValues'] = existing_port['sector_level_2'].map(ta_params)
+    
+    #conditional statement for changing asset_class value for granularity
+    if granularity == 'Broad':
+        existing_port = existing_port.rename(columns={
+            'sector_level_1': 'asset_class',
+        })
+    else:
+        existing_port = existing_port.rename(columns={
+            'sector_level_2': 'asset_class',
+        })
+    
+    # Ensure the data types match the specified types
+    existing_port['FUND'] = existing_port['FUND'].astype('string')
+    existing_port['asset_class'] = existing_port['asset_class'].astype('string')
+    existing_port['fund_age'] = existing_port['fund_age'].astype('int32')
+    existing_port['fund_initialdate'] = pd.to_datetime(existing_port['fund_initialdate']).dt.date
+    existing_port['committed_cap'] = existing_port['committed_cap'].astype('float64')
+    existing_port['current_pic'] = existing_port['current_pic'].astype('float64')
+    existing_port['current_cumdist'] = existing_port['current_cumdist'].astype('float64')
+    existing_port['current_nav'] = existing_port['current_nav'].astype('float64')
+    existing_port['uncalled'] = existing_port['uncalled'].astype('float64')
+    
+    # Keep only the specified columns
+    columns_to_keep = ['FUND', 'asset_class', 'fund_age', 'fund_initialdate', 'committed_cap', 'current_pic', 'current_cumdist', 
+'current_nav', 'uncalled', 'ParameterValues']
+    existing_port = existing_port[columns_to_keep]
+    existing_port.reset_index(inplace = True, drop=True)
+    return existing_port
+
+def rename_existing_portfolio(existing_port):
+    clean_port = existing_port.copy(deep=True)
+    clean_port.rename(columns={
+        'FUND': 'Fund',
+        'asset_class': 'Asset Class',
+        'fund_age': 'Fund Age',
+        'fund_initialdate': 'Initial Date',
+        'committed_cap': 'Committed Capital($M)',
+        'current_pic': 'Paid-in-Capital ($M)',
+        'current_cumdist': 'Cum. Distribution($M)',
+        'current_nav': 'NAV($M)',
+        'uncalled': 'Uncalled Capital($M)',
+        'ParameterValues': 'TA Parameters'
+    }, inplace=True)
+    
+    return clean_port
+
+def generate_excel_for_what_if_plots(
+    T_periods: int,
+    agg_ill_targetnav_array: np.ndarray,
+    current_total_nav_existing: float,
+    indv_target_weights_dict: dict,
+    V_df_full: pd.DataFrame,
+    C_df_full: pd.DataFrame,
+    D_df_full: pd.DataFrame,
+    liqlims_array: np.ndarray
+) -> bytes:
+    excel_data_dict = {}
+    df_periods_base = pd.DataFrame({'Period': range(T_periods + 1)})
+    df_target_nav_line = pd.DataFrame(
+        {
+            'Period': range(1, T_periods + 1),
+            'Target Aggregate NAV': agg_ill_targetnav_array.ravel()
+        }
+    )
+    df_current_nav_point = pd.DataFrame(
+        {
+            'Period': [0],
+            'Current Aggregate NAV': [current_total_nav_existing]
+        }
+    )
+
+    agg_nav_plot_data = pd.merge(df_periods_base, df_current_nav_point, on='Period', how='left')
+    agg_nav_plot_data = pd.merge(agg_nav_plot_data, df_target_nav_line, on='Period', how='left')
+    excel_data_dict["Agg_Nav_Target_data"] = agg_nav_plot_data
+
+    sub_alloc_targets_data = pd.DataFrame(
+        {
+            'Asset Class': list(indv_target_weights_dict.keys()),
+            'Target Weight': list(indv_target_weights_dict.values())
+        }
+    )
+    excel_data_dict["SubAlloc_Targets_Data"] = sub_alloc_targets_data
+
+    nav_forecast_stacked_data = V_df_full[['Period', 'asset_class', 'vintage', 'nav']].copy()
+    excel_data_dict["NAV Forecast Stacked Data"] = nav_forecast_stacked_data
+
+    sub_alloc_pm_data = V_df_full[['Period', 'asset_class', 'vintage', 'nav']].copy()
+    sub_alloc_pm_data['Total NAV In Period'] = sub_alloc_pm_data.groupby(['Period'])['nav'].transform('sum')
+    sub_alloc_pm_data['NAV Percentage'] = np.where(
+        sub_alloc_pm_data['Total NAV In Period'] == 0,
+        0,
+        sub_alloc_pm_data['nav'] / sub_alloc_pm_data['Total NAV In Period']
+    )
+    excel_data_dict["SubAlloc_PM_Weights_Data"] = sub_alloc_pm_data
+
+    total_contributions_by_period = C_df_full.groupby('Period')['C'].sum().reset_index()
+    total_distributions_by_period = D_df_full.groupby('Period')['D'].sum().reset_index()
+
+    cashflow_plot_data = pd.merge(total_contributions_by_period, total_distributions_by_period, on='Period', how='outer').fillna(0)
+    cashflow_plot_data.rename(columns={'C': 'Total Contributions', 'D': 'Total Distributions'}, inplace=True)
+
+    cashflow_plot_data['Net Cashflow'] = cashflow_plot_data['Total Distributions'] - cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Cumulative Net Cashflow'] = cashflow_plot_data['Net Cashflow'].cumsum()
+
+    cashflow_plot_data['Contributions (for Bar Chart)'] = -1 * cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Distributions (for Bar Chart)'] = cashflow_plot_data['Total Distributions']
+
+    df_liqlims = pd.DataFrame(
+        {
+            'Period': range(liqlims_array.shape[0]),
+            'Liquidity limit (as plotted)': -1 * liqlims_array.ravel()
+        }
+    )
+
+    cashflow_plot_data = pd.merge(cashflow_plot_data, df_liqlims, on='Period', how='left')
+    excel_data_dict["Cashflow_Plot_Data"] = cashflow_plot_data
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in excel_data_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    return output.getvalue()
+
+def generate_excel_for_commitment_optimization(
+    T_periods: int,
+    agg_ill_targetnav_array: np.ndarray,
+    current_total_nav_existing: float,
+    indv_target_weights_dict: dict,
+    V_df_full: pd.DataFrame,
+    C_df_full: pd.DataFrame,
+    D_df_full: pd.DataFrame,
+    commitment_plan_df: pd.DataFrame,
+    liqlims_array: np.ndarray,
+    total_port_nav: float,
+    nav_growth_rate: float
+) -> bytes:
+    """
+    Generate Excel file for Commitment Optimization scenario with all charts and tables data
+    """
+    excel_data_dict = {}
+    
+    # 1. Aggregate NAV Target Data
+    df_periods_base = pd.DataFrame({'Period': range(T_periods + 1)})
+    df_target_nav_line = pd.DataFrame({
+        'Period': range(1, T_periods + 1),
+        'Target Aggregate NAV': agg_ill_targetnav_array.ravel()
+    })
+    df_current_nav_point = pd.DataFrame({
+        'Period': [0],
+        'Current Aggregate NAV': [current_total_nav_existing]
+    })
+    
+    agg_nav_plot_data = pd.merge(df_periods_base, df_current_nav_point, on='Period', how='left')
+    agg_nav_plot_data = pd.merge(agg_nav_plot_data, df_target_nav_line, on='Period', how='left')
+    excel_data_dict["Agg_Nav_Target_Data"] = agg_nav_plot_data
+    
+    # 2. Sub-Allocation Targets Data
+    sub_alloc_targets_data = pd.DataFrame({
+        'Asset Class': list(indv_target_weights_dict.keys()),
+        'Target Weight': list(indv_target_weights_dict.values())
+    })
+    excel_data_dict["SubAlloc_Targets_Data"] = sub_alloc_targets_data
+    
+    # 3. Commitment Plan Data (unique to optimization)
+    if commitment_plan_df is not None and not commitment_plan_df.empty:
+        commitment_data = commitment_plan_df.copy()
+        commitment_data['Year'] = datetime.now().year + commitment_data['vintage']
+        excel_data_dict["Commitment_Plan"] = commitment_data[['asset_class', 'Year', 'commitment']]
+        
+        # Also create the commitment table view
+        commitment_table_data = commitment_table(commitment_plan_df)
+        excel_data_dict["Commitment_Table"] = commitment_table_data
+    
+    # 4. NAV Forecast Stacked Data
+    nav_forecast_stacked_data = V_df_full[['Period', 'asset_class', 'vintage', 'nav']].copy()
+    excel_data_dict["NAV_Forecast_Stacked_Data"] = nav_forecast_stacked_data
+    
+    # 5. Sub-Allocation PM Weights Data
+    sub_alloc_pm_data = V_df_full[['Period', 'asset_class', 'vintage', 'nav']].copy()
+    sub_alloc_pm_data['Total NAV In Period'] = sub_alloc_pm_data.groupby(['Period'])['nav'].transform('sum')
+    sub_alloc_pm_data['NAV Percentage'] = np.where(
+        sub_alloc_pm_data['Total NAV In Period'] == 0,
+        0,
+        sub_alloc_pm_data['nav'] / sub_alloc_pm_data['Total NAV In Period']
+    )
+    excel_data_dict["SubAlloc_PM_Weights_Data"] = sub_alloc_pm_data
+    
+    # 6. Cashflow Data
+    total_contributions_by_period = C_df_full.groupby('Period')['C'].sum().reset_index()
+    total_distributions_by_period = D_df_full.groupby('Period')['D'].sum().reset_index()
+    
+    cashflow_plot_data = pd.merge(total_contributions_by_period, total_distributions_by_period, 
+                                   on='Period', how='outer').fillna(0)
+    cashflow_plot_data.rename(columns={'C': 'Total Contributions', 'D': 'Total Distributions'}, 
+                              inplace=True)
+    
+    cashflow_plot_data['Net Cashflow'] = cashflow_plot_data['Total Distributions'] - \
+                                          cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Cumulative Net Cashflow'] = cashflow_plot_data['Net Cashflow'].cumsum()
+    cashflow_plot_data['Contributions (for Bar Chart)'] = -1 * cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Distributions (for Bar Chart)'] = cashflow_plot_data['Total Distributions']
+    
+    df_liqlims = pd.DataFrame({
+        'Period': range(liqlims_array.shape[0]),
+        'Liquidity limit (as plotted)': -1 * liqlims_array.ravel()
+    })
+    
+    cashflow_plot_data = pd.merge(cashflow_plot_data, df_liqlims, on='Period', how='left')
+    excel_data_dict["Cashflow_Plot_Data"] = cashflow_plot_data
+    
+    # 7. Summary Table Data (unique to optimization)
+    summary_df = summary_table(V_df_full, C_df_full, D_df_full, commitment_plan_df, 
+                               total_port_nav, nav_growth_rate)
+    excel_data_dict["Summary_Table"] = summary_df
+    
+    # Write to Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in excel_data_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=True if sheet_name in 
+                       ["Commitment_Table", "Summary_Table"] else False)
+    
+    return output.getvalue()
