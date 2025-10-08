@@ -1,0 +1,213 @@
+def generate_excel_for_what_if_plots(
+    T_periods: int,
+    agg_ill_targetnav_array: np.ndarray,
+    current_total_nav_existing: float,
+    indv_target_weights_dict: dict,
+    V_df_full: pd.DataFrame,
+    C_df_full: pd.DataFrame,
+    D_df_full: pd.DataFrame,
+    liqlims_array: np.ndarray
+) -> bytes:
+    excel_data_dict = {}
+    
+    # Handle case sensitivity for column names
+    period_col_v = 'Period' if 'Period' in V_df_full.columns else 'period'
+    nav_col = 'NAV' if 'NAV' in V_df_full.columns else 'nav'
+    period_col_c = 'Period' if 'Period' in C_df_full.columns else 'period'
+    c_col = 'C' if 'C' in C_df_full.columns else 'c'
+    period_col_d = 'Period' if 'Period' in D_df_full.columns else 'period'
+    d_col = 'D' if 'D' in D_df_full.columns else 'd'
+    
+    # 1. Aggregate NAV Target Data
+    df_periods_base = pd.DataFrame({'Period': range(T_periods + 1)})
+    df_target_nav_line = pd.DataFrame({
+        'Period': range(1, T_periods + 1),
+        'Target Aggregate NAV': agg_ill_targetnav_array.ravel()
+    })
+    df_current_nav_point = pd.DataFrame({
+        'Period': [0],
+        'Current Aggregate NAV': [current_total_nav_existing]
+    })
+
+    agg_nav_plot_data = pd.merge(df_periods_base, df_current_nav_point, on='Period', how='left')
+    agg_nav_plot_data = pd.merge(agg_nav_plot_data, df_target_nav_line, on='Period', how='left')
+    excel_data_dict["Agg_Nav_Target_data"] = agg_nav_plot_data
+
+    # 2. Sub-Allocation Targets Data
+    sub_alloc_targets_data = pd.DataFrame({
+        'Asset Class': list(indv_target_weights_dict.keys()),
+        'Target Weight': list(indv_target_weights_dict.values())
+    })
+    excel_data_dict["SubAlloc_Targets_Data"] = sub_alloc_targets_data
+
+    # 3. NAV Forecast Stacked Data
+    nav_forecast_stacked_data = V_df_full[[period_col_v, 'asset_class', 'vintage', nav_col]].copy()
+    nav_forecast_stacked_data.columns = ['Period', 'asset_class', 'vintage', 'nav']  # Standardize column names
+    excel_data_dict["NAV Forecast Stacked Data"] = nav_forecast_stacked_data
+
+    # 4. Sub-Allocation PM Weights Data
+    sub_alloc_pm_data = V_df_full[[period_col_v, 'asset_class', 'vintage', nav_col]].copy()
+    sub_alloc_pm_data.columns = ['Period', 'asset_class', 'vintage', 'nav']  # Standardize
+    sub_alloc_pm_data['Total NAV In Period'] = sub_alloc_pm_data.groupby(['Period'])['nav'].transform('sum')
+    sub_alloc_pm_data['NAV Percentage'] = np.where(
+        sub_alloc_pm_data['Total NAV In Period'] == 0,
+        0,
+        sub_alloc_pm_data['nav'] / sub_alloc_pm_data['Total NAV In Period']
+    )
+    excel_data_dict["SubAlloc_PM_Weights_Data"] = sub_alloc_pm_data
+
+    # 5. Cashflow Data
+    total_contributions_by_period = C_df_full.groupby(period_col_c)[c_col].sum().reset_index()
+    total_contributions_by_period.columns = ['Period', 'C']  # Standardize
+    
+    total_distributions_by_period = D_df_full.groupby(period_col_d)[d_col].sum().reset_index()
+    total_distributions_by_period.columns = ['Period', 'D']  # Standardize
+
+    cashflow_plot_data = pd.merge(total_contributions_by_period, total_distributions_by_period, 
+                                   on='Period', how='outer').fillna(0)
+    cashflow_plot_data.rename(columns={'C': 'Total Contributions', 'D': 'Total Distributions'}, inplace=True)
+
+    cashflow_plot_data['Net Cashflow'] = cashflow_plot_data['Total Distributions'] - cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Cumulative Net Cashflow'] = cashflow_plot_data['Net Cashflow'].cumsum()
+    cashflow_plot_data['Contributions (for Bar Chart)'] = -1 * cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Distributions (for Bar Chart)'] = cashflow_plot_data['Total Distributions']
+
+    df_liqlims = pd.DataFrame({
+        'Period': range(liqlims_array.shape[0]),
+        'Liquidity limit (as plotted)': -1 * liqlims_array.ravel()
+    })
+
+    cashflow_plot_data = pd.merge(cashflow_plot_data, df_liqlims, on='Period', how='left')
+    excel_data_dict["Cashflow_Plot_Data"] = cashflow_plot_data
+
+    # Write to Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in excel_data_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    return output.getvalue()
+
+
+def generate_excel_for_commitment_optimization(
+    T_periods: int,
+    agg_ill_targetnav_array: np.ndarray,
+    current_total_nav_existing: float,
+    indv_target_weights_dict: dict,
+    V_df_full: pd.DataFrame,
+    C_df_full: pd.DataFrame,
+    D_df_full: pd.DataFrame,
+    commitment_plan_df: pd.DataFrame,
+    liqlims_array: np.ndarray,
+    total_port_nav: float,
+    nav_growth_rate: float
+) -> bytes:
+    """
+    Generate Excel file for Commitment Optimization scenario with all charts and tables data
+    """
+    excel_data_dict = {}
+    
+    # Handle case sensitivity for column names
+    period_col_v = 'Period' if 'Period' in V_df_full.columns else 'period'
+    nav_col = 'NAV' if 'NAV' in V_df_full.columns else 'nav'
+    period_col_c = 'Period' if 'Period' in C_df_full.columns else 'period'
+    c_col = 'C' if 'C' in C_df_full.columns else 'c'
+    period_col_d = 'Period' if 'Period' in D_df_full.columns else 'period'
+    d_col = 'D' if 'D' in D_df_full.columns else 'd'
+    
+    # 1. Aggregate NAV Target Data
+    df_periods_base = pd.DataFrame({'Period': range(T_periods + 1)})
+    df_target_nav_line = pd.DataFrame({
+        'Period': range(1, T_periods + 1),
+        'Target Aggregate NAV': agg_ill_targetnav_array.ravel()
+    })
+    df_current_nav_point = pd.DataFrame({
+        'Period': [0],
+        'Current Aggregate NAV': [current_total_nav_existing]
+    })
+    
+    agg_nav_plot_data = pd.merge(df_periods_base, df_current_nav_point, on='Period', how='left')
+    agg_nav_plot_data = pd.merge(agg_nav_plot_data, df_target_nav_line, on='Period', how='left')
+    excel_data_dict["Agg_Nav_Target_Data"] = agg_nav_plot_data
+    
+    # 2. Sub-Allocation Targets Data
+    sub_alloc_targets_data = pd.DataFrame({
+        'Asset Class': list(indv_target_weights_dict.keys()),
+        'Target Weight': list(indv_target_weights_dict.values())
+    })
+    excel_data_dict["SubAlloc_Targets_Data"] = sub_alloc_targets_data
+    
+    # 3. Commitment Plan Data (unique to optimization)
+    if commitment_plan_df is not None and not commitment_plan_df.empty:
+        # Handle case sensitivity for commitment_plan_df
+        vintage_col = 'vintage' if 'vintage' in commitment_plan_df.columns else 'Vintage'
+        commitment_col = 'commitment' if 'commitment' in commitment_plan_df.columns else 'Commitment'
+        asset_class_col = 'asset_class' if 'asset_class' in commitment_plan_df.columns else 'Asset_Class'
+        
+        commitment_data = commitment_plan_df.copy()
+        commitment_data['Year'] = datetime.now().year + commitment_data[vintage_col]
+        commitment_data_clean = pd.DataFrame({
+            'asset_class': commitment_data[asset_class_col],
+            'Year': commitment_data['Year'],
+            'commitment': commitment_data[commitment_col]
+        })
+        excel_data_dict["Commitment_Plan"] = commitment_data_clean
+        
+        # Also create the commitment table view
+        commitment_table_data = commitment_table(commitment_plan_df)
+        excel_data_dict["Commitment_Table"] = commitment_table_data
+    
+    # 4. NAV Forecast Stacked Data
+    nav_forecast_stacked_data = V_df_full[[period_col_v, 'asset_class', 'vintage', nav_col]].copy()
+    nav_forecast_stacked_data.columns = ['Period', 'asset_class', 'vintage', 'nav']  # Standardize
+    excel_data_dict["NAV_Forecast_Stacked_Data"] = nav_forecast_stacked_data
+    
+    # 5. Sub-Allocation PM Weights Data
+    sub_alloc_pm_data = V_df_full[[period_col_v, 'asset_class', 'vintage', nav_col]].copy()
+    sub_alloc_pm_data.columns = ['Period', 'asset_class', 'vintage', 'nav']  # Standardize
+    sub_alloc_pm_data['Total NAV In Period'] = sub_alloc_pm_data.groupby(['Period'])['nav'].transform('sum')
+    sub_alloc_pm_data['NAV Percentage'] = np.where(
+        sub_alloc_pm_data['Total NAV In Period'] == 0,
+        0,
+        sub_alloc_pm_data['nav'] / sub_alloc_pm_data['Total NAV In Period']
+    )
+    excel_data_dict["SubAlloc_PM_Weights_Data"] = sub_alloc_pm_data
+    
+    # 6. Cashflow Data
+    total_contributions_by_period = C_df_full.groupby(period_col_c)[c_col].sum().reset_index()
+    total_contributions_by_period.columns = ['Period', 'C']  # Standardize
+    
+    total_distributions_by_period = D_df_full.groupby(period_col_d)[d_col].sum().reset_index()
+    total_distributions_by_period.columns = ['Period', 'D']  # Standardize
+    
+    cashflow_plot_data = pd.merge(total_contributions_by_period, total_distributions_by_period, 
+                                   on='Period', how='outer').fillna(0)
+    cashflow_plot_data.rename(columns={'C': 'Total Contributions', 'D': 'Total Distributions'}, 
+                              inplace=True)
+    
+    cashflow_plot_data['Net Cashflow'] = cashflow_plot_data['Total Distributions'] - \
+                                          cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Cumulative Net Cashflow'] = cashflow_plot_data['Net Cashflow'].cumsum()
+    cashflow_plot_data['Contributions (for Bar Chart)'] = -1 * cashflow_plot_data['Total Contributions']
+    cashflow_plot_data['Distributions (for Bar Chart)'] = cashflow_plot_data['Total Distributions']
+    
+    df_liqlims = pd.DataFrame({
+        'Period': range(liqlims_array.shape[0]),
+        'Liquidity limit (as plotted)': -1 * liqlims_array.ravel()
+    })
+    
+    cashflow_plot_data = pd.merge(cashflow_plot_data, df_liqlims, on='Period', how='left')
+    excel_data_dict["Cashflow_Plot_Data"] = cashflow_plot_data
+    
+    # 7. Summary Table Data (unique to optimization)
+    summary_df = summary_table(V_df_full, C_df_full, D_df_full, commitment_plan_df, 
+                               total_port_nav, nav_growth_rate)
+    excel_data_dict["Summary_Table"] = summary_df
+    
+    # Write to Excel
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in excel_data_dict.items():
+            df.to_excel(writer, sheet_name=sheet_name, index=True if sheet_name in 
+                       ["Commitment_Table", "Summary_Table"] else False)
+    
+    return output.getvalue()
