@@ -335,3 +335,110 @@ def generate_excel_for_commitment_optimization(
                        ["Commitment_Table", "Summary_Table"] else False)
     
     return output.getvalue()
+
+
+
+         # Add Excel download for Commitment Optimization
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("Download Plot Data")
+            
+            if st.sidebar.button("Prepare Data for Excel (Optimization)", key="prep_excel_optimization"):
+                try:
+                    excel_bytes = generate_excel_for_commitment_optimization(
+                        T_periods=int(T),
+                        agg_ill_targetnav_array=agg_ill_targetnav,
+                        current_total_nav_existing=existing_portfolio['current_nav'].sum(),
+                        indv_target_weights_dict=indv_weights,
+                        V_df_full=V_df,
+                        C_df_full=C_df,
+                        D_df_full=D_df,
+                        commitment_plan_df=commitment_plan_df,
+                        liqlims_array=liqlims,
+                        total_port_nav=total_port_nav,
+                        nav_growth_rate=nav_growth_rate
+                    )
+                    
+                    st.sidebar.download_button(
+                        label="Download Excel File",
+                        data=excel_bytes,
+                        file_name=f"{selected_client}_commitment_optimization_data.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_optimization_excel"
+                    )
+                    st.sidebar.success("Excel data prepared for download!")
+                except Exception as e:
+                    st.sidebar.error(f"Error preparing Excel data: {str(e)}")
+                    import traceback
+                    st.sidebar.expander("See error details").code(traceback.format_exc())
+            
+            # Add PowerPoint export for Commitment Optimization
+            add_ppt_export_section_commitment_optimization(
+                agg_ill_targetnav=agg_ill_targetnav,
+                indv_weights=indv_weights,
+                V_df=V_df,
+                commitment_plan_df=commitment_plan_df,
+                existing_portfolio=existing_portfolio,
+                C_df=C_df,
+                D_df=D_df,
+                total_port_nav=total_port_nav,
+                nav_growth_rate=nav_growth_rate,
+                client_name=selected_client,
+                granularity=granularity,
+                T=int(T),
+                liqlims=liqlims,
+                gamma=gamma,
+                target_delay=target_delay,
+                smoothing_weight=smoothing_weight,
+                min_non_zero_commit=min_non_zero_commit,
+                min_commit=min_commit,
+                max_commit=max_commit,
+                liquidity_limit=liquidity_limit
+            )
+
+
+
+                # Add Excel download for What-If scenario
+                st.sidebar.markdown("---")
+                st.sidebar.subheader("Download Plot Data")
+                if st.sidebar.button("Prepare Data for Excel (What-If Plots)"):
+                    try:
+                        excel_bytes = generate_excel_for_what_if_plots(
+                            T_periods=int(T),
+                            agg_ill_targetnav_array=agg_ill_targetnav,
+                            current_total_nav_existing=existing_portfolio['current_nav'].sum(),
+                            indv_target_weights_dict=indv_weights,
+                            V_df_full=V_df,
+                            C_df_full=C_df,
+                            D_df_full=D_df,
+                            liqlims_array=liqlims
+                        )
+
+                        st.sidebar.download_button(
+                            label="Download Excel File",
+                            data=excel_bytes,
+                            file_name=f"{selected_client}_what_if_plot_data.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="download_what_if_excel"
+                        )
+                        st.sidebar.success("Excel data prepared for download!")
+                    except Exception as e:
+                        st.sidebar.error(f"Error preparing Excel data: {str(e)}")
+                        import traceback
+                        st.sidebar.expander("See error details").code(traceback.format_exc())
+                
+                # Add PowerPoint export for What-If scenario
+                add_ppt_export_section_cashflow(
+                    agg_ill_targetnav=agg_ill_targetnav,
+                    indv_weights=indv_weights,
+                    V_df=V_df,
+                    commitment_plan_df=commitment_plan_df,
+                    existing_portfolio=existing_portfolio,
+                    C_df=C_df,
+                    D_df=D_df,
+                    total_port_nav=total_port_nav,
+                    nav_growth_rate=nav_growth_rate,
+                    client_name=selected_client,
+                    granularity=granularity,
+                    T=int(T),
+                    liqlims=liqlims
+                )
