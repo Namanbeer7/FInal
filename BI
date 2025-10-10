@@ -1,35 +1,38 @@
 Cumulative NNB Achievement % = 
 VAR AnnualBudget = 2212000000
-VAR FiscalYearNNB = 
-    CALCULATE(
-        SUM([NNB]),
-        FILTER(
-            ALL('EMEA MPS Dashboard'[Quarter]),
-            'EMEA MPS Dashboard'[Quarter] IN {
-                "4Q 2024 Results",
-                "1Q 2025 Results",
-                "2Q 2025 Results",
-                "3Q 2025 Results"
-            }
-        )
+VAR SelectedQuarter = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+VAR CumulativeNNB = 
+    SWITCH(
+        SelectedQuarter,
+        "4Q 2024 Results", 
+            CALCULATE(SUM([NNB]), 'EMEA MPS Dashboard'[Quarter] = "4Q 2024 Results"),
+        "1Q 2025 Results", 
+            CALCULATE(SUM([NNB]), 'EMEA MPS Dashboard'[Quarter] IN {"4Q 2024 Results", "1Q 2025 Results"}),
+        "2Q 2025 Results", 
+            CALCULATE(SUM([NNB]), 'EMEA MPS Dashboard'[Quarter] IN {"4Q 2024 Results", "1Q 2025 Results", "2Q 2025 Results"}),
+        "3Q 2025 Results", 
+            CALCULATE(SUM([NNB]), 'EMEA MPS Dashboard'[Quarter] IN {"4Q 2024 Results", "1Q 2025 Results", "2Q 2025 Results", "3Q 2025 Results"}),
+        0
     )
 RETURN
-DIVIDE(FiscalYearNNB, AnnualBudget, 0) * 100
+DIVIDE(CumulativeNNB, AnnualBudget, 0) * 100
+
 
 Cumulative NNBF Achievement % = 
 VAR AnnualBudget = 2212000000
-VAR FiscalYearNNBF = 
-    CALCULATE(
-        SUM([NNBF]),
-        FILTER(
-            ALL('EMEA MPS Dashboard'[Quarter]),
-            'EMEA MPS Dashboard'[Quarter] IN {
-                "4Q 2024 Results",
-                "1Q 2025 Results",
-                "2Q 2025 Results",
-                "3Q 2025 Results"
-            }
-        )
+VAR SelectedQuarter = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+VAR CumulativeNNBF = 
+    SWITCH(
+        SelectedQuarter,
+        "4Q 2024 Results", 
+            CALCULATE(SUM([NNBF]), 'EMEA MPS Dashboard'[Quarter] = "4Q 2024 Results"),
+        "1Q 2025 Results", 
+            CALCULATE(SUM([NNBF]), 'EMEA MPS Dashboard'[Quarter] IN {"4Q 2024 Results", "1Q 2025 Results"}),
+        "2Q 2025 Results", 
+            CALCULATE(SUM([NNBF]), 'EMEA MPS Dashboard'[Quarter] IN {"4Q 2024 Results", "1Q 2025 Results", "2Q 2025 Results"}),
+        "3Q 2025 Results", 
+            CALCULATE(SUM([NNBF]), 'EMEA MPS Dashboard'[Quarter] IN {"4Q 2024 Results", "1Q 2025 Results", "2Q 2025 Results", "3Q 2025 Results"}),
+        0
     )
 RETURN
-DIVIDE(FiscalYearNNBF, AnnualBudget, 0) * 100
+DIVIDE(CumulativeNNBF, AnnualBudget, 0) * 100
