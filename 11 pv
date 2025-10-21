@@ -1,4 +1,4 @@
-    # Calculate portfolio-level metrics for charts
+    # Calculate portfolio-level metrics for charts (THESE ARE FOR POWERPOINT EXPORT)
     port_data = df_pos[(df_pos.client_name == client_name)].reset_index()
     trade_data = df_trade[(df_trade.client_name == client_name)].reset_index()
     cashflow_data_portfolio = df_cashflows[(df_cashflows.client_name == client_name)].reset_index()
