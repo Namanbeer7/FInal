@@ -1,4 +1,38 @@
-   # Prepare client-level data for Excel export
+    # Calculate portfolio-level metrics for charts
+    port_data = df_pos[(df_pos.client_name == client_name)].reset_index()
+    trade_data = df_trade[(df_trade.client_name == client_name)].reset_index()
+    cashflow_data_portfolio = df_cashflows[(df_cashflows.client_name == client_name)].reset_index()
+    non_commit_cashflow_data_portfolio = trade_data[~trade_data.trade_type.str.contains('COMMIT')].reset_index()
+    
+    date_min_portfolio = min(non_commit_cashflow_data_portfolio["settle_date"])
+    date_min2_portfolio = min(cashflow_data_portfolio["trade_date"])
+    date_min_portfolio = min(date_min_portfolio, date_min2_portfolio)
+    date_max_portfolio = pd.to_datetime('today').normalize()
+    next_month_portfolio = date_max_portfolio.replace(day=28) + timedelta(days=4)
+    date_max_portfolio = next_month_portfolio - timedelta(days=next_month_portfolio.day)
+    date_list_portfolio = pd.date_range(date_min_portfolio, date_max_portfolio, freq='M').tolist()
+
+    dists_portfolio = np.array([cashflow_data_portfolio[(cashflow_data_portfolio.cashflow_type.str.contains("distribution")) & (cashflow_data_portfolio['settle_date'] <= yyy) & (cashflow_data_portfolio['settle_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_portfolio])
+    capcalls_portfolio = np.array([cashflow_data_portfolio[(cashflow_data_portfolio.cashflow_type.str.contains("capital call")) & (cashflow_data_portfolio['trade_date'] <= yyy) & (cashflow_data_portfolio['trade_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_portfolio])
+
+    cumulativecash_portfolio = np.cumsum(dists_portfolio + capcalls_portfolio)
+    nav_hist_portfolio = [non_commit_cashflow_data_portfolio[(non_commit_cashflow_data_portfolio['settle_date'] <= yyy)]['curr_face'].sum() for yyy in date_list_portfolio]
+    dpi_hist_portfolio = np.cumsum(dists_portfolio) / -np.cumsum(capcalls_portfolio)
+    rvpi_hist_portfolio = nav_hist_portfolio / -np.cumsum(capcalls_portfolio)
+    tvpi_hist_portfolio = (np.cumsum(dists_portfolio) + nav_hist_portfolio) / -np.cumsum(capcalls_portfolio)
+
+    tick_list_portfolio = port_data.iloc[:]['parent'].to_list()
+    cusip_list_portfolio = port_data.iloc[:]['cusip'].to_list()
+
+    irrlist_portfolio = [get_irr(cusip_list_portfolio, tick_list_portfolio, yyy, df_cashflows, df_trade) for yyy in date_list_portfolio]
+
+    for xxx in range(7):
+        if len(irrlist_portfolio) < xxx:
+            break
+        else:
+            irrlist_portfolio[xxx] = 0
+
+# Prepare client-level data for Excel export
     client_excel_data = {
         'Commitments Over Time': pd.DataFrame(commitment_over_time_data),
         'Commitment & Funding': dff_pos[['fund_name', 'commit_date', 'commitment', 'called_cap_x', 'strategy', sector_level]],
