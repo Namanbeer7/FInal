@@ -1,0 +1,468 @@
+   # Prepare client-level data for Excel export
+    client_excel_data = {
+        'Commitments Over Time': pd.DataFrame(commitment_over_time_data),
+        'Commitment & Funding': dff_pos[['fund_name', 'commit_date', 'commitment', 'called_cap_x', 'strategy', sector_level]],
+        'Cashflows & NAV': pd.DataFrame({
+            'Date': date_list_portfolio,
+            'Distributions': dists_portfolio,
+            'Capital Calls': capcalls_portfolio,
+            'NAV': nav_hist_portfolio,
+            'Cumulative Cashflows': cumulativecash_portfolio
+        }),
+        'TVPI Composition': pd.DataFrame({
+            'Date': date_list_portfolio,
+            'DPI': dpi_hist_portfolio,
+            'RVPI': rvpi_hist_portfolio,
+            'TVPI': tvpi_hist_portfolio
+        }),
+        'IRR History': pd.DataFrame({
+            'Date': date_list_portfolio,
+            'IRR': irrlist_portfolio
+        }),
+        'Funds Table': df_table,
+        'Strategy Summary': strat_agg_df
+    }
+    
+    # Calculate fund-level metrics
+    if fund_name:
+        cashflow_data = df_cashflows[(df_cashflows.commit_id == fund_data.loc[0, 'commit_id'])].reset_index()
+        non_commit_cashflow_data = df_trade[(df_trade.commit_id == fund_data.loc[0, 'commit_id']) & 
+                                           (~df_trade.trade_type.str.contains("COMMIT"))].reset_index()
+
+        date_min = min(cashflow_data["settle_date"])
+        date_min2 = min(cashflow_data["trade_date"])
+        date_min = min(date_min, date_min2)
+        date_max = pd.to_datetime('today').normalize()
+        next_month = date_max.replace(day=28) + timedelta(days=4)
+        date_max = next_month - timedelta(days=next_month.day)
+        date_list_fund = pd.date_range(date_min, date_max, freq='M').tolist()
+
+        dists_fund = np.array([cashflow_data[(cashflow_data.cashflow_type.str.contains("distribution")) & (cashflow_data['settle_date'] <= yyy) & (cashflow_data['settle_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_fund])
+        capcalls_fund = np.array([cashflow_data[(cashflow_data.cashflow_type.str.contains("capital_call")) & (cashflow_data['trade_date'] <= yyy) & (cashflow_data['trade_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_fund])
+
+        cumulativecash_fund = np.cumsum(dists_fund + capcalls_fund)
+        nav_hist_fund = [non_commit_cashflow_data[(non_commit_cashflow_data['settle_date'] <= yyy)]['curr_face'].sum() for yyy in date_list_fund]
+        dpi_hist_fund = np.cumsum(dists_fund) / -np.cumsum(capcalls_fund)
+        rvpi_hist_fund = nav_hist_fund / -np.cumsum(capcalls_fund)
+        tvpi_hist_fund = (np.cumsum(dists_fund) + nav_hist_fund) / -np.cumsum(capcalls_fund)
+
+        tick_list_fund = fund_data.iloc[:]['parent'].to_list()
+        cusip_list_fund = fund_data.iloc[:]['cusip'].to_list()
+        irrlist_fund = [get_irr(cusip_list_fund, tick_list_fund, yyy, df_cashflows, df_trade) for yyy in date_list_fund]
+
+        for xxx in range(7):
+            if len(irrlist_fund) < xxx:
+                break
+            else:
+                irrlist_fund[xxx] = 0
+
+        # Prepare fund-level data for Excel export
+        fund_excel_data = {
+            'Fund Summary': pd.DataFrame({
+                'Fund Name': [fund_name],
+                'Commitment': [fund_data.loc[0, 'commitment'] if not fund_data.empty else 0],
+                'Called Capital': [fund_data.loc[0, 'called_capital'] if not fund_data.empty else 0],
+                'NAV': [fund_data.loc[0, 'nav'] if not fund_data.empty else 0],
+                'Distributions': [fund_data.loc[0, 'distributions'] if not fund_data.empty else 0],
+                'DPI': [fund_data.loc[0, 'DPI'] if not fund_data.empty else 0],
+                'TVPI': [fund_data.loc[0, 'TVPI'] if not fund_data.empty else 0],
+                'IRR': [fund_data.loc[0, 'IRR'] if not fund_data.empty else 0]
+            }),
+            'Cashflows & NAV': pd.DataFrame({
+                'Date': date_list_fund,
+                'Distributions': dists_fund,
+                'Capital Calls': capcalls_fund,
+                'NAV': nav_hist_fund,
+                'Cumulative Cashflows': cumulativecash_fund
+            }),
+            'TVPI Composition': pd.DataFrame({
+                'Date': date_list_fund,
+                'DPI': dpi_hist_fund,
+                'RVPI': rvpi_hist_fund,
+                'TVPI': tvpi_hist_fund
+            }),
+            'IRR History': pd.DataFrame({
+                'Date': date_list_fund,
+                'IRR': irrlist_fund
+            })
+        }
+    
+    # SIDEBAR EXPORT SECTION
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 Export Options")
+    
+    # 1. Client-Level Excel Download
+    excel_file = create_client_level_excel(client_excel_data)
+    st.sidebar.download_button(
+        label="📥 Download Client-Level Excel",
+        data=excel_file,
+        file_name=f"{client_name}_portfolio_analysis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Download all client-level chart data in Excel format"
+    )
+    
+    # 2. Fund-Level Excel Download
+    if fund_name:
+        fund_excel_file = create_fund_level_excel(fund_excel_data, fund_name)
+        st.sidebar.download_button(
+            label=f"📥 Download Fund-Level Excel",
+            data=fund_excel_file,
+            file_name=f"{fund_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help=f"Download fund-level chart data for {fund_name}"
+        )
+    
+    # 3. PowerPoint Export Section
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 PowerPoint Export")
+    
+    template_file = st.sidebar.file_uploader(
+        "Upload PPT Template", 
+        type=["pptx"],
+        help="Upload a PowerPoint template with pre-configured chart objects"
+    )
+    
+    if template_file is not None:
+        # Prepare data dictionary for PowerPoint export
+        data_dict = {
+            'commit_df': commit_df,
+            'dff_pos': dff_pos,
+            'date_list': date_list_portfolio,
+            'dists': dists_portfolio,
+            'capcalls': capcalls_portfolio,
+            'nav_hist': nav_hist_portfolio,
+            'cumulativecash': cumulativecash_portfolio,
+            'dpi_hist': dpi_hist_portfolio,
+            'rvpi_hist': rvpi_hist_portfolio,
+            'irrlist': irrlist_portfolio
+        }
+        
+        strat_agg_dict = {
+            'broad': strat_agg_broad,
+            'granular': strat_agg_granular
+        }
+        
+        if st.sidebar.button("🚀 Generate PowerPoint", type="primary"):
+            try:
+                # Save uploaded template to temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+                    tmp_file.write(template_file.getbuffer())
+                    temp_template_path = tmp_file.name
+                
+                output_file = f"{client_name}_private_markets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+                
+                with st.spinner("Exporting charts to PowerPoint..."):
+                    # Export all charts
+                    chart_success = export_all_charts_to_ppt(
+                        data_dict=data_dict,
+                        template_path=temp_template_path,
+                        output_path=output_file,
+                        granularity=granularity,
+                        client_name=client_name
+                    )
+                
+                if chart_success:
+                    # Export tables
+                    with st.spinner("Exporting tables to PowerPoint..."):
+                        table_success = export_combined_tables_to_ppt(
+                            strat_agg_combined=strat_agg_dict,
+                            template_path=output_file,
+                            output_path=output_file,
+                            client_name=client_name
+                        )
+                    
+                    # Provide download button
+                    with open(output_file, "rb") as file:
+                        st.sidebar.success("✅ PowerPoint ready!")
+                        st.sidebar.download_button(
+                            label="📥 Download PowerPoint",
+                            data=file,
+                            file_name=output_file,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                        )
+                else:
+                    st.sidebar.error("Failed to export. Check template.")
+
+                except Exception as e:
+                    st.sidebar.error(f"Export error: {str(e)}")
+                finally:
+                    # Clean up temporary files
+                    try:
+                        if 'temp_template_path' in locals():
+                            os.unlink(temp_template_path)
+                        if 'output_file' in locals() and os.path.exists(output_file):
+                            # Keep file for download
+                            pass
+                    except:
+                        pass
+    
+    # Display plots in two tabs (removed PowerPoint Export tab)
+    tab1, tab2 = st.tabs(["Asset Allocation", "Fund Insight"])
+
+    with tab1:
+        # Use portfolio-level data that was already calculated
+        
+        fig_combined = go.Figure()
+
+        # Bar traces for Distributions and Capital Calls
+        fig_combined.add_trace(go.Bar(
+            name="Distributions",
+            x=date_list_portfolio,
+            y=dists_portfolio,
+            marker=dict(color="#008B13")
+        ))
+
+        fig_combined.add_trace(go.Bar(
+            name="Capital Calls",
+            x=date_list_portfolio,
+            y=capcalls_portfolio,
+            marker=dict(color="#A6A6A6")
+        ))
+
+        # Line traces for NAV and Cumulative Cashflows
+        fig_combined.add_trace(go.Scatter(
+            name="NAV",
+            x=date_list_portfolio,
+            y=nav_hist_portfolio,
+            mode='lines',
+            line_shape='spline',
+            marker=dict(color="#FF4713")
+        ))
+
+        fig_combined.add_trace(go.Scatter(
+            name="Cumulative Cashflows",
+            x=date_list_portfolio,
+            y=cumulativecash_portfolio,
+            mode='lines',
+            line_shape='spline',
+            marker=dict(color="#1f77b4")
+        ))
+
+        # Layout settings
+        fig_combined.update_layout(
+            title="Cashflows & NAV History",
+            width=1000,
+            barmode='group',
+            yaxis=dict(title="Size ($)")
+        )
+
+        # Create stacked bar chart
+        fig_dpi_rvpi_stacked = go.Figure()
+
+        # DPI bar (bottom stack)
+        fig_dpi_rvpi_stacked.add_trace(go.Bar(
+            name="DPI",
+            x=date_list_portfolio,
+            y=dpi_hist_portfolio,
+            marker=dict(color="#FF4713")
+        ))
+
+        # RVPI bar (stacked on top of DPI)
+        fig_dpi_rvpi_stacked.add_trace(go.Bar(
+            name="RVPI",
+            x=date_list_portfolio,
+            y=rvpi_hist_portfolio,
+            marker=dict(color="#F4B223")
+        ))
+
+        # Layout
+        fig_dpi_rvpi_stacked.update_layout(
+            barmode='stack',
+            title="TVPI Composition: DPI and RVPI Over Time",
+            width=1000,
+            yaxis=dict(title="Multiple (x)"),
+        )
+
+        # Add TVPI labels only on every 4th bar and always include the last one
+        for i, (x, tvpi) in enumerate(zip(date_list_portfolio, tvpi_hist_portfolio)):
+            if i % 3 == 0 or i == len(tvpi_hist_portfolio) - 1:
+                fig_dpi_rvpi_stacked.add_annotation(
+                    x=x,
+                    y=tvpi,
+                    text=f"{tvpi:.2f}x",
+                    showarrow=False,
+                    yshift=5,
+                    font=dict(size=10, color="black")
+                )
+
+        fig_irr = go.Figure()
+
+        fig_irr.add_trace(go.Scatter(
+            name="IRR", x=date_list_portfolio, y=irrlist_portfolio,
+            mode='lines', line_shape='spline',
+            marker=dict(color="#2ca02c")
+        ))
+
+        fig_irr.update_layout(
+            title="IRR History",
+            width=1000,
+            yaxis=dict(
+                title="IRR (%)",
+                tickformat=".00%",
+                zeroline=True,
+                zerolinewidth=2
+            ),
+            legend=dict(x=0.01, y=0.99)
+        )
+
+        # Display plots
+        st.plotly_chart(fig2)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(fig)
+            st.plotly_chart(fig_dpi_rvpi_stacked)
+
+        with col2:
+            st.plotly_chart(fig_combined)
+            st.plotly_chart(fig_irr)
+        
+        st.write("### Funds")
+        st.dataframe(df_table, hide_index=True)
+        st.write("### Strategy")
+        st.dataframe(strat_agg_df, hide_index=True)
+
+    with tab2:
+        if fund_name:
+            highlight = df_pos[df_pos.fund_name == fund_name]
+            if not highlight.empty:
+                row = highlight.iloc[0]
+                hover_text = (
+                    f"<b>Fund:</b> {row['fund_name']}<br>"
+                    f"<b>Commitment Date:</b> {row['commit_date']}<br>"
+                    f"<b>Commitment:</b> {row['commitment']:,}<br>"
+                    f"<b>Called Capital (%):</b> {row['called_cap_x']:.0%}<br>"
+                    f"<b>Strategy:</b> {row['strategy']}"
+                )
+                fig.add_annotation(
+                    x=row['commit_date'],
+                    y=row['called_cap_x'],
+                    text=hover_text,
+                    showarrow=True,
+                    arrowhead=1,
+                    ax=20,
+                    ay=60,
+                    bordercolor="black",
+                    borderwidth=1,
+                    bgcolor="white",
+                    opacity=0.9,
+                    align="left"
+                )
+
+        st.write("### "+fund_name)
+
+        fig_combined_fund = go.Figure()
+
+        # Bar traces for Distributions and Capital Calls
+        fig_combined_fund.add_trace(go.Bar(
+            name="Distributions",
+            x=date_list_fund,
+            y=dists_fund,
+            marker=dict(color="#008B13")
+        ))
+
+        fig_combined_fund.add_trace(go.Bar(
+            name="Capital Calls",
+            x=date_list_fund,
+            y=capcalls_fund,
+            marker=dict(color="#A6A6A6")
+        ))
+
+        # Line traces for NAV and Cumulative Cashflows
+        fig_combined_fund.add_trace(go.Scatter(
+            name="NAV",
+            x=date_list_fund,
+            y=nav_hist_fund,
+            mode='lines',
+            line_shape='spline',
+            marker=dict(color="#FF4713")
+        ))
+
+        fig_combined_fund.add_trace(go.Scatter(
+            name="Cumulative Cashflows",
+            x=date_list_fund,
+            y=cumulativecash_fund,
+            mode='lines',
+            line_shape='spline',
+            marker=dict(color="#1f77b4")
+        ))
+
+        # Layout settings
+        fig_combined_fund.update_layout(
+            title="Cashflows & NAV History",
+            width=1000,
+            barmode='group',
+            yaxis=dict(title="Size ($)")
+        )
+
+        # Create stacked bar chart
+        fig_dpi_rvpi_stacked_fund = go.Figure()
+
+        # DPI bar (bottom stack)
+        fig_dpi_rvpi_stacked_fund.add_trace(go.Bar(
+            name="DPI",
+            x=date_list_fund,
+            y=dpi_hist_fund,
+            marker=dict(color="#FF4713")
+        ))
+
+        # RVPI bar (stacked on top of DPI)
+        fig_dpi_rvpi_stacked_fund.add_trace(go.Bar(
+            name="RVPI",
+            x=date_list_fund,
+            y=rvpi_hist_fund,
+            marker=dict(color="#F4B223")
+        ))
+
+        # Layout
+        fig_dpi_rvpi_stacked_fund.update_layout(
+            barmode='stack',
+            title="TVPI Composition: DPI and RVPI Over Time",
+            width=1000,
+            yaxis=dict(title="Multiple (x)"),
+        )
+
+        # Add TVPI labels only on every 4th bar and always include the last one
+        for i, (x, tvpi) in enumerate(zip(date_list_fund, tvpi_hist_fund)):
+            if i % 3 == 0 or i == len(tvpi_hist_fund) - 1:
+                fig_dpi_rvpi_stacked_fund.add_annotation(
+                    x=x,
+                    y=tvpi,
+                    text=f"{tvpi:.2f}x",
+                    showarrow=False,
+                    yshift=5,
+                    font=dict(size=10, color="black")
+                )
+
+        fig_irr_fund = go.Figure()
+
+        fig_irr_fund.add_trace(go.Scatter(
+            name="IRR", x=date_list_fund, y=irrlist_fund,
+            mode='lines', line_shape='spline',
+            marker=dict(color="#2ca02c")
+        ))
+
+        fig_irr_fund.update_layout(
+            title="IRR History",
+            width=1000,
+            yaxis=dict(
+                title="IRR (%)",
+                tickformat=".00%",
+                zeroline=True,
+                zerolinewidth=2
+            ),
+            legend=dict(x=0.01, y=0.99)
+        )
+
+        # Display plots in two columns
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(fig)
+            st.plotly_chart(fig_dpi_rvpi_stacked_fund)
+
+        with col2:
+            st.plotly_chart(fig_combined_fund)
+            st.plotly_chart(fig_irr_fund)
+
+if __name__ == "__main__":
+    app()
