@@ -1,0 +1,209 @@
+    # Prepare client-level data for Excel export
+    client_excel_data = {
+        'Commitments Over Time': pd.DataFrame(commitment_over_time_data),
+        'Commitment & Funding': dff_pos[['fund_name', 'commit_date', 'commitment', 'called_cap_x', 'strategy', sector_level]],
+        'Cashflows & NAV': pd.DataFrame({
+            'Date': date_list_portfolio,
+            'Distributions': dists_portfolio,
+            'Capital Calls': capcalls_portfolio,
+            'NAV': nav_hist_portfolio,
+            'Cumulative Cashflows': cumulativecash_portfolio
+        }),
+        'TVPI Composition': pd.DataFrame({
+            'Date': date_list_portfolio,
+            'DPI': dpi_hist_portfolio,
+            'RVPI': rvpi_hist_portfolio,
+            'TVPI': tvpi_hist_portfolio
+        }),
+        'IRR History': pd.DataFrame({
+            'Date': date_list_portfolio,
+            'IRR': irrlist_portfolio
+        }),
+        'Funds Table': df_table,
+        'Strategy Summary': strat_agg_df
+    }
+
+    # Calculate fund-level data
+    cashflow_data = df_cashflows[(df_cashflows.commit_id == fund_data.loc[0, 'commit_id'])].reset_index() if not fund_data.empty else pd.DataFrame()
+    non_commit_cashflow_data = df_trade[(df_trade.commit_id == fund_data.loc[0, 'commit_id']) & 
+                                       (~df_trade.trade_type.str.contains("COMMIT"))].reset_index() if not fund_data.empty else pd.DataFrame()
+
+    if not cashflow_data.empty:
+        date_min = min(cashflow_data["settle_date"])
+        date_min2 = min(cashflow_data["trade_date"])
+        date_min = min(date_min, date_min2)
+        date_max = pd.to_datetime('today').normalize()
+        next_month = date_max.replace(day=28) + timedelta(days=4)
+        date_max = next_month - timedelta(days=next_month.day)
+        date_list_fund = pd.date_range(date_min, date_max, freq='M').tolist()
+
+        dists_fund = np.array([cashflow_data[(cashflow_data.cashflow_type.str.contains("distribution")) & (cashflow_data['settle_date'] <= yyy) & (cashflow_data['settle_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_fund])
+        capcalls_fund = np.array([cashflow_data[(cashflow_data.cashflow_type.str.contains("capital_call")) & (cashflow_data['trade_date'] <= yyy) & (cashflow_data['trade_date'] >= yyy.replace(day=1))]['curr_face'].sum() for yyy in date_list_fund])
+
+        cumulativecash_fund = np.cumsum(dists_fund + capcalls_fund)
+        nav_hist_fund = [non_commit_cashflow_data[(non_commit_cashflow_data['settle_date'] <= yyy)]['curr_face'].sum() for yyy in date_list_fund]
+        dpi_hist_fund = np.cumsum(dists_fund) / -np.cumsum(capcalls_fund)
+        rvpi_hist_fund = nav_hist_fund / -np.cumsum(capcalls_fund)
+        tvpi_hist_fund = (np.cumsum(dists_fund) + nav_hist_fund) / -np.cumsum(capcalls_fund)
+
+        tick_list_fund = fund_data.iloc[:]['parent'].to_list()
+        cusip_list_fund = fund_data.iloc[:]['cusip'].to_list()
+        irrlist_fund = [get_irr(cusip_list_fund, tick_list_fund, yyy, df_cashflows, df_trade) for yyy in date_list_fund]
+
+        for xxx in range(7):
+            if len(irrlist_fund) < xxx:
+                break
+            else:
+                irrlist_fund[xxx] = 0
+    else:
+        date_list_fund = []
+        dists_fund = []
+        capcalls_fund = []
+        cumulativecash_fund = []
+        nav_hist_fund = []
+        dpi_hist_fund = []
+        rvpi_hist_fund = []
+        tvpi_hist_fund = []
+        irrlist_fund = []
+
+    # Prepare fund-level data for Excel export
+    fund_excel_data = {
+        'Fund Summary': pd.DataFrame({
+            'Fund Name': [fund_name],
+            'Commitment': [fund_data.loc[0, 'commitment'] if not fund_data.empty else 0],
+            'Called Capital': [fund_data.loc[0, 'called_capital'] if not fund_data.empty else 0],
+            'NAV': [fund_data.loc[0, 'nav'] if not fund_data.empty else 0],
+            'Distributions': [fund_data.loc[0, 'distributions'] if not fund_data.empty else 0],
+            'DPI': [fund_data.loc[0, 'DPI'] if not fund_data.empty else 0],
+            'TVPI': [fund_data.loc[0, 'TVPI'] if not fund_data.empty else 0],
+            'IRR': [fund_data.loc[0, 'IRR'] if not fund_data.empty else 0]
+        }),
+        'Cashflows & NAV': pd.DataFrame({
+            'Date': date_list_fund,
+            'Distributions': dists_fund,
+            'Capital Calls': capcalls_fund,
+            'NAV': nav_hist_fund,
+            'Cumulative Cashflows': cumulativecash_fund
+        }) if date_list_fund else pd.DataFrame(),
+        'TVPI Composition': pd.DataFrame({
+            'Date': date_list_fund,
+            'DPI': dpi_hist_fund,
+            'RVPI': rvpi_hist_fund,
+            'TVPI': tvpi_hist_fund
+        }) if date_list_fund else pd.DataFrame(),
+        'IRR History': pd.DataFrame({
+            'Date': date_list_fund,
+            'IRR': irrlist_fund
+        }) if date_list_fund else pd.DataFrame()
+    }
+
+    # SIDEBAR EXPORT SECTION
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📊 Export Options")
+    
+    # Client-Level Excel Export
+    excel_file = create_client_level_excel(client_excel_data)
+    st.sidebar.download_button(
+        label="📥 Client-Level Excel",
+        data=excel_file,
+        file_name=f"{client_name}_portfolio_analysis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help="Download all client-level chart data in Excel format",
+        key="client_excel_sidebar"
+    )
+    
+    # Fund-Level Excel Export
+    fund_excel_file = create_fund_level_excel(fund_excel_data, fund_name)
+    st.sidebar.download_button(
+        label=f"📥 Fund-Level Excel",
+        data=fund_excel_file,
+        file_name=f"{fund_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        help=f"Download fund-level chart data for {fund_name} in Excel format",
+        key="fund_excel_sidebar"
+    )
+    
+    # PowerPoint Export Section
+    st.sidebar.markdown("---")
+    template_file = st.sidebar.file_uploader(
+        "📎 Upload PPT Template", 
+        type=["pptx"], 
+        key="ppt_template_sidebar",
+        help="Upload a PowerPoint template with pre-configured chart objects"
+    )
+    
+    if template_file is not None:
+        # Prepare data dictionary for PowerPoint export
+        data_dict = {
+            'commit_df': commit_df,
+            'dff_pos': dff_pos,
+            'date_list': date_list_portfolio,
+            'dists': dists_portfolio,
+            'capcalls': capcalls_portfolio,
+            'nav_hist': nav_hist_portfolio,
+            'cumulativecash': cumulativecash_portfolio,
+            'dpi_hist': dpi_hist_portfolio,
+            'rvpi_hist': rvpi_hist_portfolio,
+            'irrlist': irrlist_portfolio
+        }
+        
+        strat_agg_dict = {
+            'broad': strat_agg_broad,
+            'granular': strat_agg_granular
+        }
+        
+        if st.sidebar.button("🚀 Generate PowerPoint", key="export_ppt_sidebar", type="primary", use_container_width=True):
+            try:
+                # Save uploaded template to temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+                    tmp_file.write(template_file.getbuffer())
+                    temp_template_path = tmp_file.name
+                
+                output_file = f"{client_name}_private_markets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+                
+                with st.spinner("Exporting to PowerPoint..."):
+                    # Export all charts
+                    chart_success = export_all_charts_to_ppt(
+                        data_dict=data_dict,
+                        template_path=temp_template_path,
+                        output_path=output_file,
+                        granularity=granularity,
+                        client_name=client_name
+                    )
+                
+                if chart_success:
+                    # Export tables using the file with charts already updated
+                    with st.spinner("Exporting tables..."):
+                        table_success = export_combined_tables_to_ppt(
+                            strat_agg_combined=strat_agg_dict,
+                            template_path=output_file,
+                            output_path=output_file,
+                            client_name=client_name
+                        )
+                    
+                    # Provide download button
+                    with open(output_file, "rb") as file:
+                        st.sidebar.success("✅ PowerPoint ready!")
+                        st.sidebar.download_button(
+                            label="📥 Download PowerPoint",
+                            data=file,
+                            file_name=output_file,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            key="download_ppt_sidebar"
+                        )
+                else:
+                    st.sidebar.error("Failed to export. Check template.")
+                        
+            except Exception as e:
+                st.sidebar.error(f"Error: {str(e)}")
+            finally:
+                # Clean up temporary files
+                try:
+                    if 'temp_template_path' in locals():
+                        os.unlink(temp_template_path)
+                    if 'output_file' in locals() and os.path.exists(output_file):
+                        # Keep file for download
+                        pass
+                except:
+                    pass
+                        
