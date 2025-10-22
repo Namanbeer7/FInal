@@ -1,0 +1,173 @@
+    # 3. PowerPoint Export - Single Button (No Upload Required)
+    st.sidebar.markdown("---")
+    
+    # Define the template path - adjust this path based on your folder structure
+    # Assuming the template is in an 'export' folder relative to the main script
+    template_path = os.path.join(os.path.dirname(__file__), 'export', 'ppt_template.pptx')
+    
+    # Check if template exists
+    if not os.path.exists(template_path):
+        st.sidebar.error("⚠️ PowerPoint template not found in export folder!")
+        st.sidebar.info("Please ensure 'ppt_template.pptx' is in the 'export' folder")
+    else:
+        # Prepare data dictionary for PowerPoint export
+        data_dict = {
+            'commit_df': commit_df,
+            'dff_pos': dff_pos,
+            'date_list': date_list_portfolio,
+            'dists': dists_portfolio,
+            'capcalls': capcalls_portfolio,
+            'nav_hist': nav_hist_portfolio,
+            'cumulativecash': cumulativecash_portfolio,
+            'dpi_hist': dpi_hist_portfolio,
+            'rvpi_hist': rvpi_hist_portfolio,
+            'irrlist': irrlist_portfolio
+        }
+        
+        strat_agg_dict = {
+            'broad': strat_agg_broad,
+            'granular': strat_agg_granular
+        }
+        
+        if st.sidebar.button("📥 Download PowerPoint Report", type="primary", help="Generate and download PowerPoint presentation"):
+            try:
+                output_file = f"{client_name}_private_markets_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+                
+                with st.spinner("Generating PowerPoint report..."):
+                    # Export all charts using the permanent template
+                    chart_success = export_all_charts_to_ppt(
+                        data_dict=data_dict,
+                        template_path=template_path,
+                        output_path=output_file,
+                        granularity=granularity,
+                        client_name=client_name
+                    )
+                
+                if chart_success:
+                    # Export tables
+                    with st.spinner("Adding tables to PowerPoint..."):
+                        table_success = export_combined_tables_to_ppt(
+                            strat_agg_combined=strat_agg_dict,
+                            template_path=output_file,
+                            output_path=output_file,
+                            client_name=client_name
+                        )
+                    
+                    # Provide download
+                    with open(output_file, "rb") as file:
+                        st.sidebar.success("✅ PowerPoint generated!")
+                        st.sidebar.download_button(
+                            label="📥 Download Generated PowerPoint",
+                            data=file,
+                            file_name=output_file,
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            key="download_generated_ppt"
+                        )
+                        
+                    # Clean up the temporary output file after a delay
+                    # (optional - you may want to keep it for debugging)
+                    try:
+                        if os.path.exists(output_file):
+                            os.unlink(output_file)
+                    except:
+                        pass
+                        
+                else:
+                    st.sidebar.error("Failed to generate PowerPoint. Please check the template configuration.")
+                    
+            except FileNotFoundError as e:
+                st.sidebar.error(f"Template file not found: {str(e)}")
+                st.sidebar.info("Please ensure the template file 'ppt_template.pptx' is in the 'export' folder")
+            except Exception as e:
+                st.sidebar.error(f"Error generating PowerPoint: {str(e)}")
+                import traceback
+                st.sidebar.text(traceback.format_exc())
+
+
+
+
+
+
+
+
+def get_template_path():
+    """
+    Get the path to the PowerPoint template stored in the export folder.
+    
+    Returns:
+        str: Path to the template file
+    
+    Raises:
+        FileNotFoundError: If template file doesn't exist
+    """
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Template should be in the same 'export' folder as this script
+    template_path = os.path.join(script_dir, 'ppt_template.pptx')
+    
+    # Check if template exists
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"PowerPoint template not found at: {template_path}")
+    
+    return template_path
+
+
+def validate_template(template_path):
+    """
+    Validate that the template has all required chart and table objects.
+    
+    Args:
+        template_path (str): Path to the PowerPoint template
+    
+    Returns:
+        dict: Validation results with found/missing objects
+    """
+    try:
+        prs = Presentation(template_path)
+        
+        required_charts = [
+            'cht_commitment_broad', 
+            'cht_commitment_granular',
+            'cht_stacked_area_broad', 
+            'cht_stacked_area_granular',
+            'cht_irr',
+            'cht_history',
+            'cht_tvpi'
+        ]
+        
+        required_tables = [
+            'tbd_strategy_broad',
+            'tbd_strategy_granular'
+        ]
+        
+        found_objects = []
+        missing_objects = []
+        
+        # Check all slides for named shapes
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.name:
+                    found_objects.append(shape.name)
+        
+        # Check for required charts
+        for chart_name in required_charts:
+            if chart_name not in found_objects:
+                missing_objects.append(f"Chart: {chart_name}")
+        
+        # Check for required tables
+        for table_name in required_tables:
+            if table_name not in found_objects:
+                missing_objects.append(f"Table: {table_name}")
+        
+        return {
+            'valid': len(missing_objects) == 0,
+            'found': found_objects,
+            'missing': missing_objects
+        }
+        
+    except Exception as e:
+        return {
+            'valid': False,
+            'error': str(e)
+        }
