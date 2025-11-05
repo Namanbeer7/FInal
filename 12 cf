@@ -1,0 +1,170 @@
+def update_chart_with_data(chart, df, chart_name_for_logging="", V_df_data=None):
+    """
+    Updates chart data and applies gradient styling for vintage-based series.
+    """
+    # Get vintage range for normalization
+    vintage_range = extract_vintage_range_from_data(V_df_data) if V_df_data is not None else (-5, 10)
+    
+    # 1. Update Chart Data
+    chart_data_obj = CategoryChartData()
+    chart_data_obj.categories = [str(cat) for cat in df.iloc[:, 0].tolist()]
+    
+    for col_idx in range(1, len(df.columns)):
+        series_name_from_df = df.columns[col_idx]
+        series_values_raw = df.iloc[:, col_idx].tolist()
+        processed_values = [
+            float(val) if pd.notna(val) else None
+            for val in pd.to_numeric(series_values_raw, errors='coerce')
+        ]
+        chart_data_obj.add_series(series_name_from_df, processed_values)
+    
+    chart.replace_data(chart_data_obj)
+    
+    # IMPORTANT: Ensure chart types are correct before applying colors
+    if chart_name_for_logging == "NAV Forecast (Absolute NAV & Target Line)":
+        ensure_combo_chart_types(chart, chart_name_for_logging)
+    
+    # 2. Force refresh of series collection
+    try:
+        # This forces PowerPoint to recognize the series
+        _ = chart.series
+    except:
+        st.warning(f"Could not access series for {chart_name_for_logging}")
+        return
+    
+    # 3. Build asset class color map FIRST
+    asset_class_color_map = {}
+    color_index = 0
+    
+    # First pass - map asset classes to colors
+    for series_obj in chart.series:
+        series_name = series_obj.name
+        if not series_name:  # Sometimes series name can be None after data replacement
+            continue
+            
+        asset_class, vintage = extract_asset_class_and_vintage(series_name)
+        
+        # Skip special series
+        if series_name == "Target NAV (Line)" or series_name == "Target NAV":
+            continue
+            
+        if asset_class not in asset_class_color_map:
+            asset_class_color_map[asset_class] = PPT_EXTENDED_RGB_COLORS[color_index % len(PPT_EXTENDED_RGB_COLORS)]
+            color_index += 1
+    
+    # Debug: Print color mapping
+    st.write(f"Color mapping for {chart_name_for_logging}: {list(asset_class_color_map.keys())}")
+    
+    # 4. Apply colors with gradients - SECOND PASS
+    for i, series_obj in enumerate(chart.series):
+        series_name = series_obj.name
+        if not series_name:
+            series_name = f"Series{i}"  # Fallback name
+        
+        # Apply gradient for specific charts
+        if chart_name_for_logging in ["NAV Forecast (Absolute NAV & Target Line)", 
+                                       "Sub-Allocation of Private Markets"]:
+            
+            if "Target NAV" in series_name:
+                # Special styling for target line
+                color = RGBColor(154, 218, 186)  # Light teal
+                
+                # Ensure it's a line series
+                if hasattr(series_obj.format, 'line'):
+                    series_obj.format.line.color.rgb = color
+                    series_obj.format.line.width = Pt(2.0)
+                    series_obj.format.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+                    
+                if hasattr(series_obj, 'marker'):
+                    series_obj.marker.style = XL_MARKER_STYLE.CIRCLE
+                    series_obj.marker.size = 5
+                    if hasattr(series_obj.marker.format, 'fill'):
+                        series_obj.marker.format.fill.solid()
+                        series_obj.marker.format.fill.fore_color.rgb = color
+                        
+            else:
+                # Extract asset class and vintage
+                asset_class, vintage = extract_asset_class_and_vintage(series_name)
+                
+                if asset_class in asset_class_color_map:
+                    base_color = asset_class_color_map[asset_class]
+                    
+                    # Apply vintage-based gradient
+                    if vintage is not None:
+                        adjusted_color = get_shade_adjusted_color(base_color, vintage, vintage_range)
+                    else:
+                        adjusted_color = base_color
+                    
+                    # Apply color to fill (for area/bar charts)
+                    if hasattr(series_obj.format, 'fill'):
+                        try:
+                            series_obj.format.fill.solid()
+                            series_obj.format.fill.fore_color.rgb = adjusted_color
+                            st.write(f"Applied color to {series_name}: RGB({adjusted_color.rgb})")
+                        except Exception as e:
+                            st.warning(f"Could not apply fill color to {series_name}: {e}")
+                    
+                    # Also apply to line (for line borders on areas)
+                    if hasattr(series_obj.format, 'line'):
+                        try:
+                            series_obj.format.line.color.rgb = adjusted_color
+                            series_obj.format.line.width = Pt(0.75)
+                        except:
+                            pass  # Line color is optional
+                    
+                    # Remove markers for area charts
+                    if hasattr(series_obj, 'marker'):
+                        try:
+                            series_obj.marker.style = XL_MARKER_STYLE.NONE
+                        except:
+                            pass
+                            
+                else:
+                    st.warning(f"No color mapping found for asset class: {asset_class}")
+                    # Apply a default color
+                    default_color = PPT_EXTENDED_RGB_COLORS[i % len(PPT_EXTENDED_RGB_COLORS)]
+                    if hasattr(series_obj.format, 'fill'):
+                        series_obj.format.fill.solid()
+                        series_obj.format.fill.fore_color.rgb = default_color
+        
+        # Keep simple colors for other charts
+        elif chart_name_for_logging in ["Aggregate NAV Target", "Sub-Allocation Targets"]:
+            color = PPT_EXTENDED_RGB_COLORS[i % len(PPT_EXTENDED_RGB_COLORS)]
+            
+            if chart_name_for_logging == "Aggregate NAV Target":
+                # Line chart styling
+                if hasattr(series_obj.format, 'line'):
+                    series_obj.format.line.color.rgb = color
+                    series_obj.format.line.width = Pt(2.0)
+                if hasattr(series_obj, 'marker'):
+                    series_obj.marker.style = XL_MARKER_STYLE.CIRCLE
+                    series_obj.marker.size = 5
+                    if hasattr(series_obj.marker.format, 'fill'):
+                        series_obj.marker.format.fill.solid()
+                        series_obj.marker.format.fill.fore_color.rgb = color
+                        
+            elif chart_name_for_logging == "Sub-Allocation Targets":
+                # Bar chart styling
+                if hasattr(series_obj.format, 'fill'):
+                    series_obj.format.fill.solid()
+                    series_obj.format.fill.fore_color.rgb = color
+        
+        # Cashflow chart special colors
+        elif chart_name_for_logging == "Cashflows Plot":
+            if "Contribution" in series_name:
+                color = RGBColor(255, 71, 19)  # Orange/Red
+            elif "Distribution" in series_name:
+                color = RGBColor(0, 139, 197)  # Blue
+            elif "Cumulative" in series_name:
+                color = RGBColor(255, 206, 0)  # Yellow
+            elif "Liquidity" in series_name:
+                color = RGBColor(169, 169, 169)  # Gray
+            else:
+                color = PPT_EXTENDED_RGB_COLORS[i % len(PPT_EXTENDED_RGB_COLORS)]
+            
+            # Apply the color
+            if hasattr(series_obj.format, 'fill'):
+                series_obj.format.fill.solid()
+                series_obj.format.fill.fore_color.rgb = color
+            if hasattr(series_obj.format, 'line'):
+                series_obj.format.line.color.rgb = color
