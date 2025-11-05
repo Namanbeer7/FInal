@@ -1,0 +1,436 @@
+# ADD THIS NEW FUNCTION
+def extract_vintage_range_from_data(V_df_data):
+    """
+    Extract the range of vintages from the data for normalization.
+    
+    Args:
+        V_df_data: DataFrame containing vintage data
+    
+    Returns:
+        tuple: (min_vintage, max_vintage)
+    """
+    if V_df_data is None or V_df_data.empty or 'vintage' not in V_df_data.columns:
+        return (-5, 10)  # Default range
+    
+    vintages = V_df_data['vintage'].dropna()
+    if vintages.empty:
+        return (-5, 10)
+    
+    return (int(vintages.min()), int(vintages.max()))
+
+
+# ENHANCE THIS EXISTING FUNCTION
+def get_shade_adjusted_color(base_color_rgb, vintage, vintage_range=(-5, 10)):
+    """
+    Adjust color shade based on vintage year.
+    Enhanced to use vintage range for better normalization.
+    
+    Args:
+        base_color_rgb: RGBColor object (base color for asset class)
+        vintage: int (vintage year, can be negative for past years)
+        vintage_range: tuple (min_vintage, max_vintage) for normalization
+    
+    Returns:
+        RGBColor: Adjusted color with shade gradient
+    """
+    if vintage is None:
+        return base_color_rgb
+
+    if isinstance(base_color_rgb, type):
+        return RGBColor(128, 128, 128)
+
+    if not hasattr(base_color_rgb, 'rgb'):
+        return RGBColor(128, 128, 128)
+
+    try:
+        rgb_int = base_color_rgb.rgb
+        r = (rgb_int >> 16) & 0xFF
+        g = (rgb_int >> 8) & 0xFF
+        b = rgb_int & 0xFF
+    except:
+        return RGBColor(128, 128, 128)
+
+    # Normalize vintage to 0-1 range for consistent gradients
+    min_v, max_v = vintage_range
+    if max_v != min_v:
+        normalized = (vintage - min_v) / (max_v - min_v)
+    else:
+        normalized = 0.5
+    
+    # Apply gradient: older (lower normalized) = darker, newer = lighter
+    if normalized < 0.5:
+        # Darker for older vintages
+        factor = 0.4 + (normalized * 1.2)  # 0.4 to 1.0
+        new_r = int(r * factor)
+        new_g = int(g * factor)
+        new_b = int(b * factor)
+    else:
+        # Lighter for newer vintages
+        lightness = (normalized - 0.5) * 0.6  # 0 to 0.3
+        new_r = int(min(255, r + (255 - r) * lightness))
+        new_g = int(min(255, g + (255 - g) * lightness))
+        new_b = int(min(255, b + (255 - b) * lightness))
+
+    return RGBColor(new_r, new_g, new_b)
+
+
+
+# UPDATE THIS EXISTING FUNCTION - Add V_df_data parameter
+def update_chart_with_data(chart, df, chart_name_for_logging="", V_df_data=None):
+    """
+    Final version with vintage gradient support for all scenarios.
+    """
+    # Get vintage range for normalization
+    vintage_range = extract_vintage_range_from_data(V_df_data) if V_df_data is not None else (-5, 10)
+    
+    # 1. Update Chart Data
+    chart_data_obj = CategoryChartData()
+    chart_data_obj.categories = [str(cat) for cat in df.iloc[:, 0].tolist()]
+
+    for col_idx in range(1, len(df.columns)):
+        series_name_from_df = df.columns[col_idx]
+        series_values_raw = df.iloc[:, col_idx].tolist()
+
+        processed_values = [
+            float(val) if pd.notna(val) else None
+            for val in pd.to_numeric(series_values_raw, errors='coerce')
+        ]
+
+        chart_data_obj.add_series(series_name_from_df, processed_values)
+
+    chart.replace_data(chart_data_obj)
+    ensure_combo_chart_types(chart, chart_name_for_logging)
+
+    # 2. Apply Styling
+    if not hasattr(chart, 'series'):
+        return
+
+    asset_class_color_map = {}
+    color_index = 0
+
+    # First pass: build asset class to color mapping
+    for series_obj in chart.series:
+        series_name = series_obj.name
+        asset_class, vintage = extract_asset_class_and_vintage(series_name)
+        if asset_class not in asset_class_color_map and series_name != "Target NAV (Line)":
+            asset_class_color_map[asset_class] = PPT_EXTENDED_RGB_COLORS[color_index % len(PPT_EXTENDED_RGB_COLORS)]
+            color_index += 1
+
+    # Second pass: apply colors with gradients
+    for i, series_obj in enumerate(chart.series):
+        series_name = series_obj.name
+
+        # Aggregate NAV Target - simple colors
+        if chart_name_for_logging == "Aggregate NAV Target":
+            color = PPT_EXTENDED_RGB_COLORS[i % len(PPT_EXTENDED_RGB_COLORS)]
+            if series_obj.format.line:
+                series_obj.format.line.color.rgb = color
+                series_obj.format.line.width = Pt(2.0)
+            if hasattr(series_obj, 'marker'):
+                series_obj.marker.style = XL_MARKER_STYLE.CIRCLE
+                series_obj.marker.size = 5
+                series_obj.marker.format.fill.solid()
+                series_obj.marker.format.fill.fore_color.rgb = color
+                series_obj.marker.format.line.color.rgb = color
+
+        # Sub-Allocation Targets - simple bar chart
+        elif chart_name_for_logging == "Sub-Allocation Targets":
+            color = PPT_EXTENDED_RGB_COLORS[i % len(PPT_EXTENDED_RGB_COLORS)]
+            if series_obj.format.fill:
+                series_obj.format.fill.solid()
+                series_obj.format.fill.fore_color.rgb = color
+
+        # NAV Forecast - WITH GRADIENT
+        elif chart_name_for_logging == "NAV Forecast (Absolute NAV & Target Line)":
+            if series_name == "Target NAV (Line)":
+                color = RGBColor(154, 218, 186)
+                if series_obj.format.line:
+                    series_obj.format.line.color.rgb = color
+                    series_obj.format.line.width = Pt(2.0)
+                    series_obj.format.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+                if hasattr(series_obj, 'marker') and series_obj.marker:
+                    series_obj.marker.style = XL_MARKER_STYLE.CIRCLE
+                    series_obj.marker.size = 5
+                    series_obj.marker.format.fill.solid()
+                    series_obj.marker.format.fill.fore_color.rgb = color
+            else:
+                # Apply gradient for asset class + vintage
+                asset_class, vintage = extract_asset_class_and_vintage(series_name)
+                if asset_class in asset_class_color_map:
+                    base_color = asset_class_color_map[asset_class]
+                    if not isinstance(base_color, RGBColor):
+                        base_color = PPT_EXTENDED_RGB_COLORS[0]
+                    
+                    color = get_shade_adjusted_color(base_color, vintage, vintage_range)
+                    if series_obj.format.fill:
+                        series_obj.format.fill.solid()
+                        series_obj.format.fill.fore_color.rgb = color
+                    if series_obj.format.line:
+                        series_obj.format.line.width = Pt(0.75)
+                    if hasattr(series_obj, 'marker'):
+                        series_obj.marker.style = XL_MARKER_STYLE.NONE
+
+        # Sub-Allocation of Private Markets - WITH GRADIENT
+        elif chart_name_for_logging == "Sub-Allocation of Private Markets":
+            asset_class, vintage = extract_asset_class_and_vintage(series_name)
+            if asset_class in asset_class_color_map:
+                base_color = asset_class_color_map[asset_class]
+                if not isinstance(base_color, RGBColor):
+                    base_color = PPT_EXTENDED_RGB_COLORS[0]
+                
+                color = get_shade_adjusted_color(base_color, vintage, vintage_range)
+                if series_obj.format.fill:
+                    series_obj.format.fill.solid()
+                    series_obj.format.fill.fore_color.rgb = color
+                if series_obj.format.line:
+                    series_obj.format.line.width = Pt(0.75)
+                if hasattr(series_obj, 'marker'):
+                    series_obj.marker.style = XL_MARKER_STYLE.NONE
+
+        # Cashflows chart
+        elif chart_name_for_logging == "Cashflows Plot":
+            if series_name == "Contributions":
+                color = RGBColor(255, 71, 19)
+                if series_obj.format.fill:
+                    series_obj.format.fill.solid()
+                    series_obj.format.fill.fore_color.rgb = color
+            elif series_name == "Distributions":
+                color = RGBColor(0, 139, 197)
+                if series_obj.format.fill:
+                    series_obj.format.fill.solid()
+                    series_obj.format.fill.fore_color.rgb = color
+            elif series_name == "Cumulative Net Cashflow":
+                color = RGBColor(255, 192, 0)
+                if series_obj.format.line:
+                    series_obj.format.line.color.rgb = color
+                    series_obj.format.line.width = Pt(2.0)
+                if hasattr(series_obj, 'marker'):
+                    series_obj.marker.style = XL_MARKER_STYLE.CIRCLE
+                    series_obj.marker.size = 5
+                    series_obj.marker.format.fill.solid()
+                    series_obj.marker.format.fill.fore_color.rgb = color
+            elif series_name == "Liquidity Limit":
+                color = RGBColor(169, 169, 169)
+                if series_obj.format.line:
+                    series_obj.format.line.color.rgb = color
+                    series_obj.format.line.width = Pt(1.5)
+                    series_obj.format.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+                if hasattr(series_obj, 'marker'):
+                    series_obj.marker.style = XL_MARKER_STYLE.NONE
+
+
+# UPDATE THE EXPORT FUNCTION - Pass V_df_data to update_chart_with_data
+def export_cashflow_charts_to_ppt(
+    template_path,
+    output_path,
+    agg_ill_targetnav_np,
+    current_agg_nav_scalar,
+    indv_weights_dict,
+    V_df_data,
+    C_df_data,
+    D_df_data,
+    liqlims_data_arr,
+    T_periods,
+    existing_portfolio_df,
+    granularity_str,
+    commitment_plan_df=None
+):
+    try:
+        prs = Presentation(template_path)
+
+        chart_configs = [
+            {
+                "name": "cht_aggregate_nav",
+                "data_func": prepare_aggregate_nav_data,
+                "args": (agg_ill_targetnav_np, existing_portfolio_df, T_periods),
+                "chart_type": "line",
+                "display_name": "Aggregate NAV Target"
+            },
+            {
+                "name": "cht_sub_alloc_target",
+                "data_func": prepare_sub_allocation_targets_data,
+                "args": (indv_weights_dict,),
+                "chart_type": "bar",
+                "display_name": "Sub-Allocation Targets"
+            },
+            {
+                "name": "cht_sub_alloc_pm",
+                "data_func": prepare_sub_allocation_pm_data,
+                "args": (V_df_data, granularity_str),
+                "chart_type": "area",
+                "display_name": "Sub-Allocation of Private Markets"
+            },
+            {
+                "name": "cht_nav_forecast",
+                "data_func": prepare_nav_forecast_data_optimized,
+                "args": (V_df_data, agg_ill_targetnav_np, granularity_str, T_periods),
+                "chart_type": "combo",
+                "display_name": "NAV Forecast (Absolute NAV & Target Line)"
+            },
+            {
+                "name": "cht_cashflows",
+                "data_func": prepare_cashflows_chart_data,
+                "args": (C_df_data, D_df_data, liqlims_data_arr, T_periods),
+                "chart_type": "combo",
+                "display_name": "Cashflows Plot"
+            }
+        ]
+
+        charts_updated_count = 0
+        chart_slide_mapping = {}
+
+        for config in chart_configs:
+            chart_name_in_template = config["name"]
+            st.write(f"--- Processing chart: {chart_name_in_template} ---")
+
+            try:
+                chart_data_df = config["data_func"](*config["args"])
+
+                if not isinstance(chart_data_df, pd.DataFrame) or chart_data_df.empty:
+                    st.warning(f"No data generated for {chart_name_in_template}. Skipping.")
+                    continue
+
+                st.write(f"Data for {chart_name_in_template} (head):")
+                st.dataframe(chart_data_df.head())
+
+            except Exception as e:
+                st.error(f"Error during data preparation for {chart_name_in_template}: {str(e)}")
+                continue
+
+            chart_found_and_updated_on_any_slide = False
+            for slide_idx, slide in enumerate(prs.slides):
+                for shape in slide.shapes:
+                    if shape.name == chart_name_in_template:
+                        st.write(f"Found shape '{shape.name}' on slide {slide_idx + 1}.")
+
+                        if not hasattr(shape, 'chart') or shape.chart is None:
+                            st.error(f"Shape '{shape.name}' is not a chart object.")
+                            continue
+
+                        try:
+                            # IMPORTANT: Pass V_df_data here
+                            update_chart_with_data(
+                                shape.chart, 
+                                chart_data_df, 
+                                chart_name_for_logging=config.get('display_name', chart_name_in_template),
+                                V_df_data=V_df_data  # Pass for gradient calculation
+                            )
+                            st.success(f"Successfully updated chart '{shape.name}' on slide {slide_idx + 1}.")
+                            charts_updated_count += 1
+                            chart_found_and_updated_on_any_slide = True
+                            chart_slide_mapping[chart_name_in_template] = slide_idx
+                            break
+
+                        except Exception as e:
+                            st.error(f"Error updating chart '{shape.name}': {str(e)}")
+                            chart_found_and_updated_on_any_slide = True
+                            break
+                
+                if chart_found_and_updated_on_any_slide:
+                    break
+
+            if not chart_found_and_updated_on_any_slide:
+                st.warning(f"No chart named '{chart_name_in_template}' found in template.")
+
+        # Add double legends if needed
+        if V_df_data is not None and not V_df_data.empty:
+            prs = Presentation(output_path)
+            legends_added = 0
+            for chart_name in ["cht_sub_alloc_pm", "cht_nav_forecast"]:
+                if chart_name in chart_slide_mapping:
+                    slide_idx = chart_slide_mapping[chart_name]
+                    slide = prs.slides[slide_idx]
+                    add_custom_legend_textbox(slide, V_df_data, position_x=Inches(7.5), position_y=Inches(1.5))
+                    legends_added += 1
+
+            prs.save(output_path)
+            st.write(f"Added {legends_added} double legends to the presentation.")
+
+        return charts_updated_count > 0
+
+    except Exception as e:
+        st.error(f"Critical error in export_cashflow_charts_to_ppt: {str(e)}")
+        return False
+
+
+
+# ADD THIS NEW FUNCTION for Commitment Optimization
+def add_ppt_export_section_commitment_optimization(
+    agg_ill_targetnav, indv_weights, V_df, commitment_plan_df,
+    existing_portfolio, C_df, D_df, total_port_nav, nav_growth_rate,
+    client_name, granularity, T, liqlims,
+    gamma, target_delay, smoothing_weight, min_non_zero_commit,
+    min_commit, max_commit, liquidity_limit
+):
+    """
+    PowerPoint export section for Commitment Optimization scenario.
+    Uses the same export function with gradient support.
+    """
+    st.sidebar.subheader("Export to PowerPoint - Optimization")
+
+    template_file = st.sidebar.file_uploader(
+        "Upload PowerPoint Template", 
+        type="pptx", 
+        key="optimization_ppt_template"
+    )
+
+    if "generated_optimization_ppt_path" not in st.session_state:
+        st.session_state.generated_optimization_ppt_path = None
+
+    if template_file is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+            tmp_file.write(template_file.getbuffer())
+            temp_template_path = tmp_file.name
+
+        if st.sidebar.button("Generate Optimization PowerPoint", key="generate_ppt_optimization"):
+            current_agg_nav = 0.0
+            if existing_portfolio is not None and 'current_nav' in existing_portfolio.columns:
+                current_agg_nav = existing_portfolio['current_nav'].sum()
+
+            if V_df is None or agg_ill_targetnav is None or indv_weights is None:
+                st.sidebar.error("Required data for export is not available.")
+            else:
+                st.session_state.generated_optimization_ppt_path = None
+                output_file = f"{client_name}_commitment_optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pptx"
+
+                with st.spinner("Generating Optimization PowerPoint with gradient charts..."):
+                    # Use the same export function that now supports gradients
+                    chart_success = export_cashflow_charts_to_ppt(
+                        template_path=temp_template_path,
+                        output_path=output_file,
+                        agg_ill_targetnav_np=agg_ill_targetnav,
+                        current_agg_nav_scalar=current_agg_nav,
+                        indv_weights_dict=indv_weights,
+                        V_df_data=V_df,
+                        C_df_data=C_df,
+                        D_df_data=D_df,
+                        liqlims_data_arr=liqlims,
+                        T_periods=T,
+                        existing_portfolio_df=existing_portfolio,
+                        granularity_str=granularity,
+                        commitment_plan_df=commitment_plan_df
+                    )
+
+                if chart_success:
+                    st.session_state.generated_optimization_ppt_path = output_file
+                    st.sidebar.success("Optimization charts with gradients exported successfully!")
+                else:
+                    st.sidebar.error("Failed to export optimization charts.")
+
+        # Clean up temp file
+        try:
+            if 'temp_template_path' in locals() and os.path.exists(temp_template_path):
+                os.unlink(temp_template_path)
+        except Exception as e:
+            st.warning(f"Could not delete temp template file: {e}")
+
+    # Download button
+    if st.session_state.generated_optimization_ppt_path and os.path.exists(st.session_state.generated_optimization_ppt_path):
+        with open(st.session_state.generated_optimization_ppt_path, "rb") as file:
+            st.sidebar.download_button(
+                label="Download Optimization PowerPoint",
+                data=file,
+                file_name=os.path.basename(st.session_state.generated_optimization_ppt_path),
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key="download_optimization_ppt"
+            )
