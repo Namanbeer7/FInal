@@ -434,3 +434,46 @@ def add_ppt_export_section_commitment_optimization(
                 mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 key="download_optimization_ppt"
             )
+
+
+
+Task: PowerPoint Export - Add Color/Transparency Gradient for Commitment Optimization Charts
+Context
+I have a Streamlit cashflow application with two scenarios:
+1. "What If" scenario - Currently has PowerPoint export functionality
+2. "Commitment Optimization" scenario - Needs PowerPoint export with specific color requirements
+Current Implementation
+* Main application: cashflow_page.py
+* PowerPoint export module: cashflow_ppt_export.py
+* The Streamlit app successfully displays charts with color gradients based on asset class and vintage
+Specific Requirement
+For the Commitment Optimization scenario, I need to implement color/transparency gradients in two PowerPoint charts:
+1. Sub-allocation of Private Markets chart
+2. NAV Forecast chart
+Color Logic Requirements
+The color scheme follows these rules:
+* Each asset class → Unique base color
+* Vintage years within each asset class → Gradient effect where:
+   * Older vintages = Darker/more opaque
+   * Newer vintages = Lighter/more transparent
+Technical Details
+* The Streamlit app uses a get_shade_adjusted_color() function for this gradient effect
+* Area charts display this gradient successfully in the web interface
+* Need to replicate this exact visual behavior in PowerPoint exports
+Deliverables Needed
+1. Analysis: Review the current code to understand:
+   * How get_shade_adjusted_color() creates the gradient
+   * How asset classes and vintages are extracted and mapped
+2. Implementation Strategy: Recommend the best approach for PowerPoint:
+   * Should we use transparency (alpha channel)?
+   * Should we adjust hue/saturation/lightness?
+   * How to maintain visual consistency with the Streamlit version?
+3. Code Solution: Provide implementation that:
+   * Extracts asset classes and vintages from the data
+   * Applies the same gradient logic as the Streamlit charts
+   * Integrates seamlessly with the existing PowerPoint export functionality
+Files to Analyze
+I will provide:
+1. cashflow_page.py - Contains the Streamlit implementation with the working gradient
+2. cashflow_ppt_export.py - Current PowerPoint export code that needs enhancement
+3. I have added streamlit charts screenshots for better visual understanding as well.
