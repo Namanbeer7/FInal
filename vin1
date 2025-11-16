@@ -1,0 +1,20 @@
+    try:
+        # This works because RGBColor implements __int__() in most versions
+        rgb_int = int(base_color_rgb)
+        r = (rgb_int >> 16) & 0xFF
+        g = (rgb_int >> 8) & 0xFF
+        b = rgb_int & 0xFF
+    except (TypeError, ValueError) as e:
+        # Fallback: try alternative extraction methods
+        try:
+            if hasattr(base_color_rgb, 'rgb') and isinstance(base_color_rgb.rgb, tuple):
+                r, g, b = base_color_rgb.rgb
+            elif hasattr(base_color_rgb, '_r') and hasattr(base_color_rgb, '_g'):
+                r = base_color_rgb._r
+                g = base_color_rgb._g
+                b = base_color_rgb._b
+            else:
+                # Last resort - return middle gray
+                return RGBColor(128, 128, 128)
+        except:
+            return RGBColor(128, 128, 128)
