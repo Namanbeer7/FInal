@@ -1,0 +1,40 @@
+Task: Implement Vintage-Based Color Gradients in PowerPoint Charts
+Context
+I'm working on a Streamlit cashflow application that exports PowerPoint presentations. The app has two scenarios:
+1. "What If" scenario
+2. "Commitment Optimization" scenario
+Key Files:
+* Main application: cashflow_page.py
+* PowerPoint export module: cashflow_ppt_export.py
+The Streamlit application successfully displays charts with color gradients using plotnine's scale_alpha() function. I need to replicate this gradient effect in the PowerPoint export functionality.
+Objective
+Implement color/transparency gradients for vintage years in two PowerPoint charts:
+1. Sub-Allocation of Private Markets chart (stacked area chart)
+2. NAV Forecast chart (stacked area chart)
+Color Gradient Requirements
+Base Rule
+* Each asset class → Gets a unique base color from the ALADDIN_COLORS palette
+* Vintage years within the same asset class → Display as gradient variations of the base color
+Gradient Logic
+* Older vintages (e.g., vintage = -7) → Darker/More opaque shades of the base color
+* Newer vintages (e.g., vintage = -1) → Lighter/More transparent shades of the base color
+Example to better explain my task:
+Given these data series:
+* PE - Corporate - vintage(-7)
+* PE - Direct/Co-Investment - vintage(-1)
+* PE - Direct/Co-Investment - vintage(-7)
+* PE - Secondaries - vintage(-5)
+Expected color behavior:
+1. PE - Corporate → Gets color #1 (e.g., #00885C)
+   * vintage(-7) → Darker shade of #00885C
+2. PE - Direct/Co-Investment → Gets color #2 (e.g., #FFCE00)
+   * vintage(-7) → Darker shade of #FFCE00 (more opaque)
+   * vintage(-1) → Lighter shade of #FFCE00 (more transparent)
+3. PE - Secondaries → Gets color #3 (e.g., #FF4713)
+   * vintage(-5) → Medium shade of #FF4713
+
+Files to Analyze I will provide: 
+1. cashflow_page.py - Contains the Streamlit implementation with the working gradient 
+2. cashflow_ppt_export.py - Current PowerPoint export code that needs enhancement 
+3. def nav_commitment_sep_plots(...) - Contains streamlit plotline implementation
+4. I have added streamlit charts screenshots for better visual understanding as well.
