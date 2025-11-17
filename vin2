@@ -69,4 +69,4 @@ def get_all_vintages_from_df(V_df_data):
     return sorted(V_df_data['vintage'].unique().tolist())
 
 
-
+all_vintages = get_all_vintages_from_df(V_df_data) if 'V_df_data' in locals() else None
