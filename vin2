@@ -1,0 +1,72 @@
+def get_shade_adjusted_color(base_color_rgb, vintage, all_vintages=None):
+    """
+    Adjusts color shade based on vintage year to create gradient effect.
+    Older vintages (more negative) appear darker, newer vintages appear lighter.
+    
+    This matches the plotnine scale_alpha(range=(0.2, 0.8)) behavior where:
+    - Older vintages (e.g., -7) are more opaque/darker
+    - Newer vintages (e.g., -1) are more transparent/lighter
+    """
+    if vintage is None:
+        return base_color_rgb
+
+    # Handle edge cases
+    if not isinstance(base_color_rgb, RGBColor):
+        return RGBColor(128, 128, 128)
+
+    try:
+        rgb_int = base_color_rgb.rgb
+        r = (rgb_int >> 16) & 0xFF
+        g = (rgb_int >> 8) & 0xFF
+        b = rgb_int & 0xFF
+    except:
+        return RGBColor(128, 128, 128)
+
+    # Normalize vintage to 0-1 range for consistent gradient
+    if all_vintages and len(all_vintages) > 1:
+        min_vintage = min(all_vintages)
+        max_vintage = max(all_vintages)
+        vintage_range = max_vintage - min_vintage
+        
+        if vintage_range > 0:
+            # IMPORTANT: Reverse normalization for correct gradient direction
+            # Older (more negative) vintages should get lower normalized values
+            normalized = (vintage - min_vintage) / vintage_range
+            normalized_reversed = 1.0 - normalized  # Reverse for darker = older
+        else:
+            normalized_reversed = 0.5
+    else:
+        # Fallback: assume typical vintage range of -10 to 0
+        normalized = (vintage + 10) / 10
+        normalized = max(0, min(1, normalized))
+        normalized_reversed = 1.0 - normalized
+    
+    # Apply gradient: 0.3 (darkest) to 1.0 (normal)
+    min_factor = 0.3  # Darkest shade for oldest vintage
+    max_factor = 1.0  # Normal shade for newest vintage
+    
+    factor = min_factor + (normalized_reversed * (max_factor - min_factor))
+    
+    # Apply darkening factor
+    new_r = int(r * factor)
+    new_g = int(g * factor)
+    new_b = int(b * factor)
+    
+    # Clamp to valid range
+    new_r = max(0, min(255, new_r))
+    new_g = max(0, min(255, new_g))
+    new_b = max(0, min(255, new_b))
+
+    return RGBColor(new_r, new_g, new_b)
+
+
+def get_all_vintages_from_df(V_df_data):
+    """
+    Extract all unique vintages from the dataframe for gradient normalization.
+    """
+    if V_df_data is None or V_df_data.empty:
+        return []
+    return sorted(V_df_data['vintage'].unique().tolist())
+
+
+
