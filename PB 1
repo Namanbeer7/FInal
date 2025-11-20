@@ -1,0 +1,21 @@
+Quarter_Sort = 
+let
+    quarterText = [Quarter],
+    
+    // Extract year - finds any 4-digit sequence
+    yearMatches = Text.PositionOf(quarterText, "20"),
+    year = if yearMatches >= 0 
+           then Number.From(Text.Middle(quarterText, yearMatches, 4))
+           else 9999,
+    
+    // Extract quarter number
+    quarter = if Text.Contains(quarterText, "1Q") then 1
+              else if Text.Contains(quarterText, "2Q") then 2
+              else if Text.Contains(quarterText, "3Q") then 3
+              else if Text.Contains(quarterText, "4Q") then 4
+              else 0,
+    
+    // Create sortable number: YYYYQ format (20241, 20251, etc.)
+    sortValue = year * 10 + quarter
+in
+    sortValue
