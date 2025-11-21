@@ -1,0 +1,53 @@
+QoQ Growth = 
+VAR CurrentQuarter = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+VAR CurrentQuarterAUM = SUM([AUM])
+
+// Parse current quarter details
+VAR CurrentYear = 
+    VALUE(MID(CurrentQuarter, SEARCH("20", CurrentQuarter, 1), 4))
+VAR CurrentQuarterNum = 
+    SWITCH(
+        TRUE(),
+        CONTAINSSTRING(CurrentQuarter, "1Q"), 1,
+        CONTAINSSTRING(CurrentQuarter, "2Q"), 2,
+        CONTAINSSTRING(CurrentQuarter, "3Q"), 3,
+        CONTAINSSTRING(CurrentQuarter, "4Q"), 4,
+        BLANK()
+    )
+
+// Calculate previous quarter details
+VAR PreviousQuarterNum = 
+    IF(CurrentQuarterNum = 1, 4, CurrentQuarterNum - 1)
+VAR PreviousYear = 
+    IF(CurrentQuarterNum = 1, CurrentYear - 1, CurrentYear)
+
+// Get previous quarter AUM
+VAR PreviousQuarterAUM = 
+    CALCULATE(
+        SUM([AUM]),
+        FILTER(
+            ALL('EMEA MPS Dashboard'[Quarter]),
+            VAR LoopYear = 
+                VALUE(MID([Quarter], SEARCH("20", [Quarter], 1), 4))
+            VAR LoopQuarterNum = 
+                SWITCH(
+                    TRUE(),
+                    CONTAINSSTRING([Quarter], "1Q"), 1,
+                    CONTAINSSTRING([Quarter], "2Q"), 2,
+                    CONTAINSSTRING([Quarter], "3Q"), 3,
+                    CONTAINSSTRING([Quarter], "4Q"), 4,
+                    BLANK()
+                )
+            RETURN
+                LoopYear = PreviousYear &&
+                LoopQuarterNum = PreviousQuarterNum
+        )
+    )
+
+// Calculate growth percentage
+RETURN
+    IF(
+        ISBLANK(PreviousQuarterAUM) || PreviousQuarterAUM = 0,
+        BLANK(),
+        DIVIDE(CurrentQuarterAUM - PreviousQuarterAUM, PreviousQuarterAUM)
+    )
