@@ -1,0 +1,34 @@
+Is Current Fiscal Year = 
+VAR LatestQuarter = 
+    CALCULATE(
+        MAX('EMEA MPS Dashboard'[Quarter]),
+        ALL('EMEA MPS Dashboard')
+    )
+VAR LatestYear = 
+    VALUE(MID(LatestQuarter, SEARCH("20", LatestQuarter, 1), 4))
+VAR LatestQuarterNum = 
+    SWITCH(
+        TRUE(),
+        CONTAINSSTRING(LatestQuarter, "1Q"), 1,
+        CONTAINSSTRING(LatestQuarter, "2Q"), 2,
+        CONTAINSSTRING(LatestQuarter, "3Q"), 3,
+        CONTAINSSTRING(LatestQuarter, "4Q"), 4,
+        BLANK()
+    )
+VAR LatestFiscalYear = 
+    IF(LatestQuarterNum = 4, LatestYear + 1, LatestYear)
+VAR CurrentRowFiscalYear = [_Fiscal Year]
+RETURN
+    IF(CurrentRowFiscalYear = LatestFiscalYear, 1, 0)
+
+
+FY Filter Options = 
+DATATABLE(
+    "Option", STRING,
+    "FilterValue", INTEGER,
+    {
+        {"Current Fiscal Year Only", 1},
+        {"All Fiscal Years", 0}
+    }
+)
+
