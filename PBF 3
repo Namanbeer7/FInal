@@ -1,25 +1,38 @@
 Is Current Fiscal Year = 
-VAR LatestQuarter = 
+VAR CurrentQuarter = 'EMEA MPS Dashboard'[Quarter]
+VAR CurrentYear = 
+    VALUE(MID(CurrentQuarter, SEARCH("20", CurrentQuarter, 1), 4))
+VAR CurrentQuarterNum = 
+    SWITCH(
+        TRUE(),
+        CONTAINSSTRING(CurrentQuarter, "1Q"), 1,
+        CONTAINSSTRING(CurrentQuarter, "2Q"), 2,
+        CONTAINSSTRING(CurrentQuarter, "3Q"), 3,
+        CONTAINSSTRING(CurrentQuarter, "4Q"), 4,
+        BLANK()
+    )
+VAR CurrentFiscalYear = 
+    IF(CurrentQuarterNum = 4, CurrentYear + 1, CurrentYear)
+VAR LatestQuarterInData = 
     CALCULATE(
         MAX('EMEA MPS Dashboard'[Quarter]),
         ALL('EMEA MPS Dashboard')
     )
 VAR LatestYear = 
-    VALUE(MID(LatestQuarter, SEARCH("20", LatestQuarter, 1), 4))
+    VALUE(MID(LatestQuarterInData, SEARCH("20", LatestQuarterInData, 1), 4))
 VAR LatestQuarterNum = 
     SWITCH(
         TRUE(),
-        CONTAINSSTRING(LatestQuarter, "1Q"), 1,
-        CONTAINSSTRING(LatestQuarter, "2Q"), 2,
-        CONTAINSSTRING(LatestQuarter, "3Q"), 3,
-        CONTAINSSTRING(LatestQuarter, "4Q"), 4,
+        CONTAINSSTRING(LatestQuarterInData, "1Q"), 1,
+        CONTAINSSTRING(LatestQuarterInData, "2Q"), 2,
+        CONTAINSSTRING(LatestQuarterInData, "3Q"), 3,
+        CONTAINSSTRING(LatestQuarterInData, "4Q"), 4,
         BLANK()
     )
 VAR LatestFiscalYear = 
     IF(LatestQuarterNum = 4, LatestYear + 1, LatestYear)
-VAR CurrentRowFiscalYear = [_Fiscal Year]
 RETURN
-    IF(CurrentRowFiscalYear = LatestFiscalYear, 1, 0)
+    IF(CurrentFiscalYear = LatestFiscalYear, "Current FY", "Previous FY")
 
 
 FY Filter Options = 
