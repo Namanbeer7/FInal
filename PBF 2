@@ -107,3 +107,16 @@ RETURN
         SUM('EMEA MPS Dashboard'[NNBF]),
         YTDQuarters
     )
+
+
+
+Cumulative NNB Achievement % = 
+VAR AnnualBudget = 2212000000
+RETURN
+DIVIDE([YTD NNB], AnnualBudget, 0) * 100
+
+
+Cumulative NNBF Achievement % = 
+VAR AnnualBudget = 2212000000
+RETURN
+DIVIDE([YTD NNBF], AnnualBudget, 0) * 100
