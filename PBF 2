@@ -1,0 +1,109 @@
+_Quarter Number = 
+VAR QuarterText = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+RETURN
+    SWITCH(
+        TRUE(),
+        CONTAINSSTRING(QuarterText, "1Q"), 1,
+        CONTAINSSTRING(QuarterText, "2Q"), 2,
+        CONTAINSSTRING(QuarterText, "3Q"), 3,
+        CONTAINSSTRING(QuarterText, "4Q"), 4,
+        BLANK()
+    )
+
+_Quarter Year = 
+VAR QuarterText = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+VAR YearStart = SEARCH("20", QuarterText, 1, BLANK())
+RETURN
+    IF(
+        NOT(ISBLANK(YearStart)),
+        VALUE(MID(QuarterText, YearStart, 4)),
+        BLANK()
+    )
+
+
+_Fiscal Year = 
+VAR QuarterNum = [_Quarter Number]
+VAR CalendarYear = [_Quarter Year]
+RETURN
+    IF(
+        QuarterNum = 4,
+        CalendarYear + 1,  // Q4 2024 belongs to FY2025
+        CalendarYear       // Q1-Q3 2025 belong to FY2025
+    )
+
+
+YTD NNB = 
+VAR CurrentQuarterText = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+VAR CurrentQuarterNum = [_Quarter Number]
+VAR CurrentYear = [_Quarter Year]
+VAR CurrentFiscalYear = [_Fiscal Year]
+
+// Determine the start of fiscal year (Q4 of previous calendar year)
+VAR FiscalYearStartYear = CurrentFiscalYear - 1
+VAR FiscalYearStartQuarter = "Q4 " & FiscalYearStartYear
+
+// Get all quarters in the current fiscal year up to and including current quarter
+VAR YTDQuarters = 
+    FILTER(
+        ALL('EMEA MPS Dashboard'[Quarter]),
+        VAR LoopYear = 
+            VALUE(MID([Quarter], SEARCH("20", [Quarter], 1), 4))
+        VAR LoopQuarterNum = 
+            SWITCH(
+                TRUE(),
+                CONTAINSSTRING([Quarter], "1Q"), 1,
+                CONTAINSSTRING([Quarter], "2Q"), 2,
+                CONTAINSSTRING([Quarter], "3Q"), 3,
+                CONTAINSSTRING([Quarter], "4Q"), 4,
+                BLANK()
+            )
+        VAR LoopFiscalYear = 
+            IF(LoopQuarterNum = 4, LoopYear + 1, LoopYear)
+        VAR LoopSortKey = LoopYear * 10 + LoopQuarterNum
+        VAR CurrentSortKey = CurrentYear * 10 + CurrentQuarterNum
+        RETURN
+            LoopFiscalYear = CurrentFiscalYear &&
+            LoopSortKey <= CurrentSortKey
+    )
+
+RETURN
+    CALCULATE(
+        SUM('EMEA MPS Dashboard'[NNB]),
+        YTDQuarters
+    )
+
+
+YTD NNBF = 
+VAR CurrentQuarterText = SELECTEDVALUE('EMEA MPS Dashboard'[Quarter])
+VAR CurrentQuarterNum = [_Quarter Number]
+VAR CurrentYear = [_Quarter Year]
+VAR CurrentFiscalYear = [_Fiscal Year]
+
+VAR YTDQuarters = 
+    FILTER(
+        ALL('EMEA MPS Dashboard'[Quarter]),
+        VAR LoopYear = 
+            VALUE(MID([Quarter], SEARCH("20", [Quarter], 1), 4))
+        VAR LoopQuarterNum = 
+            SWITCH(
+                TRUE(),
+                CONTAINSSTRING([Quarter], "1Q"), 1,
+                CONTAINSSTRING([Quarter], "2Q"), 2,
+                CONTAINSSTRING([Quarter], "3Q"), 3,
+                CONTAINSSTRING([Quarter], "4Q"), 4,
+                BLANK()
+            )
+        VAR LoopFiscalYear = 
+            IF(LoopQuarterNum = 4, LoopYear + 1, LoopYear)
+        VAR LoopSortKey = LoopYear * 10 + LoopQuarterNum
+        VAR CurrentSortKey = CurrentYear * 10 + CurrentQuarterNum
+        RETURN
+            LoopFiscalYear = CurrentFiscalYear &&
+            LoopSortKey <= CurrentSortKey
+    )
+
+RETURN
+    CALCULATE(
+        SUM('EMEA MPS Dashboard'[NNBF]),
+        YTDQuarters
+    )
