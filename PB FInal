@@ -1,0 +1,8 @@
+= Table.SelectRows(
+    #"Reordered Columns",
+    each (
+        [Name] <> "High Level Summary" and 
+        [Name] <> "Model Ticker Map" and
+        (Text.Contains([Name], "Results") or Text.Contains([Name], "Additional Clients"))
+    )
+)
