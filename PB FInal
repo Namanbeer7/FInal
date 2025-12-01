@@ -6,3 +6,8 @@
         (Text.Contains([Name], "Results") or Text.Contains([Name], "Additional Clients"))
     )
 )
+
+if Text.Contains([Name], "Additional Clients") then 
+    Text.Start([Name], 7)  // Extracts "2Q 2025" from "2Q 2025 Additional Clients"
+else 
+    Text.Replace([Name], " Results", "")  // Removes " Results" from other sheets
